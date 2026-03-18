@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, systemPreferences } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const Store = require('electron-store');
@@ -347,9 +347,53 @@ ipcMain.handle('is-overlay', (event) => {
   return event.sender === overlayWindow.webContents;
 });
 
+// ===== Microphone Permission =====
+
+async function checkMicrophonePermission() {
+  if (process.platform !== 'darwin') return;
+
+  const status = systemPreferences.getMediaAccessStatus('microphone');
+
+  if (status === 'not-determined') {
+    await systemPreferences.askForMediaAccess('microphone');
+  } else if (status === 'denied') {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'マイクのアクセス権限が必要です',
+      message: 'Aqua Voice はマイクへのアクセスが許可されていません',
+      detail:
+        'システム設定 → プライバシーとセキュリティ → マイク で\nAqua Voice を許可してください。',
+      buttons: ['閉じる', 'システム設定を開く'],
+      defaultId: 1,
+    });
+    if (response === 1) {
+      exec(
+        'open x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+      );
+    }
+  }
+}
+
+// ===== Login Item =====
+
+ipcMain.handle('get-login-item', () => {
+  return app.getLoginItemSettings().openAtLogin;
+});
+
+ipcMain.handle('set-login-item', (event, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true });
+  return { success: true };
+});
+
+ipcMain.handle('check-mic-permission', async () => {
+  if (process.platform !== 'darwin') return 'granted';
+  return systemPreferences.getMediaAccessStatus('microphone');
+});
+
 // ===== App Lifecycle =====
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await checkMicrophonePermission();
   createMainWindow();
   createOverlayWindow();
   createTray();

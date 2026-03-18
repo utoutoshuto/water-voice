@@ -12,14 +12,24 @@
   "build": {
     "appId": "com.aqua-voice.app",
     "productName": "Aqua Voice",
+    "directories": {
+      "output": "release"
+    },
     "mac": {
+      "icon": "assets/icon.png",
       "category": "public.app-category.productivity",
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.plist",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "音声入力のためにマイクへのアクセスが必要です。",
+        "NSAppleEventsUsageDescription": "テキスト挿入のためにAppleScriptが必要です。",
+        "LSUIElement": true
+      }
     },
     "win": {
+      "icon": "assets/icon.png",
       "target": "nsis"
     },
     "files": [

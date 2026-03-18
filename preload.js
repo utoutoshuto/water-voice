@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Recording control
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
 
+  // Login item
+  getLoginItem: () => ipcRenderer.invoke('get-login-item'),
+  setLoginItem: (enabled) => ipcRenderer.invoke('set-login-item', enabled),
+
+  // Microphone permission
+  checkMicPermission: () => ipcRenderer.invoke('check-mic-permission'),
+
   // Check if this window is the overlay
   isOverlay: () => ipcRenderer.invoke('is-overlay'),
 

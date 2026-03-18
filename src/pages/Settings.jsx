@@ -24,17 +24,18 @@ const HOTKEYS = [
 export default function Settings() {
   const [settings, setSettings] = useState(null);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     window.electronAPI.getSettings().then(setSettings);
+    window.electronAPI.getLoginItem().then(setLaunchAtLogin);
   }, []);
 
   const handleSave = async () => {
     setSavedMsg('');
     setErrorMsg('');
-
     const result = await window.electronAPI.saveSettings(settings);
     if (result.success) {
       setSavedMsg('設定を保存しました ✅');
@@ -44,9 +45,12 @@ export default function Settings() {
     }
   };
 
-  const update = (key, value) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
+  const handleLoginToggle = async (enabled) => {
+    setLaunchAtLogin(enabled);
+    await window.electronAPI.setLoginItem(enabled);
   };
+
+  const update = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }));
 
   if (!settings) return <div style={{ padding: 24, color: '#888' }}>読み込み中...</div>;
 
@@ -61,7 +65,7 @@ export default function Settings() {
       <div className="card">
         <div className="card-title">Claude API キー</div>
         <div className="form-group">
-          <label className="form-label">APIキー</label>
+          <label className="form-label">API キー</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               type={showApiKey ? 'text' : 'password'}
@@ -70,16 +74,12 @@ export default function Settings() {
               value={settings.apiKey}
               onChange={(e) => update('apiKey', e.target.value)}
             />
-            <button
-              className="btn btn-ghost"
-              onClick={() => setShowApiKey(!showApiKey)}
-              style={{ flexShrink: 0 }}
-            >
+            <button className="btn btn-ghost" onClick={() => setShowApiKey(!showApiKey)} style={{ flexShrink: 0 }}>
               {showApiKey ? '🙈' : '👁'}
             </button>
           </div>
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            Anthropic Console からAPIキーを取得できます。キーはローカルに暗号化して保存されます。
+            Anthropic Console から取得できます。キーはローカルに暗号化して保存されます。
           </p>
         </div>
       </div>
@@ -94,9 +94,7 @@ export default function Settings() {
             value={settings.hotkey}
             onChange={(e) => update('hotkey', e.target.value)}
           >
-            {HOTKEYS.map((k) => (
-              <option key={k} value={k}>{k}</option>
-            ))}
+            {HOTKEYS.map((k) => <option key={k} value={k}>{k}</option>)}
           </select>
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
             変更後は保存が必要です。他のアプリと競合する場合は別のキーを選択してください。
@@ -130,11 +128,8 @@ export default function Settings() {
             <div className="toggle-desc">整形後に自動でテキストを貼り付ける</div>
           </div>
           <label className="toggle">
-            <input
-              type="checkbox"
-              checked={settings.autoInsert}
-              onChange={(e) => update('autoInsert', e.target.checked)}
-            />
+            <input type="checkbox" checked={settings.autoInsert}
+              onChange={(e) => update('autoInsert', e.target.checked)} />
             <span className="toggle-slider" />
           </label>
         </div>
@@ -144,11 +139,19 @@ export default function Settings() {
             <div className="toggle-desc">「えー」「あー」「えっと」などを自動削除</div>
           </div>
           <label className="toggle">
-            <input
-              type="checkbox"
-              checked={settings.removeFillers}
-              onChange={(e) => update('removeFillers', e.target.checked)}
-            />
+            <input type="checkbox" checked={settings.removeFillers}
+              onChange={(e) => update('removeFillers', e.target.checked)} />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+        <div className="toggle-row">
+          <div>
+            <div className="toggle-label">ログイン時に自動起動</div>
+            <div className="toggle-desc">OS 起動時にバックグラウンドで自動起動する</div>
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={launchAtLogin}
+              onChange={(e) => handleLoginToggle(e.target.checked)} />
             <span className="toggle-slider" />
           </label>
         </div>

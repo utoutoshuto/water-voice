@@ -8,13 +8,20 @@ export default function Home() {
   const [processed, setProcessed] = useState('');
   const [status, setStatus] = useState('idle'); // idle | recording | processing | done | error
   const [errorMsg, setErrorMsg] = useState('');
+  const [micPermission, setMicPermission] = useState('unknown');
 
   const recognitionRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const streamRef = useRef(null);
+  const animFrameRef = useRef(null);
+  const canvasRef = useRef(null);
+  const isRecordingRef = useRef(false);
 
   useEffect(() => {
     window.electronAPI.getSettings().then(setSettings);
+    window.electronAPI.checkMicPermission().then(setMicPermission);
 
-    // Listen for recording state changes from main process (hotkey)
     window.electronAPI.onRecordingState(({ isRecording: rec }) => {
       if (rec) {
         startRecording();
@@ -25,16 +32,101 @@ export default function Home() {
 
     return () => {
       window.electronAPI.removeRecordingStateListener();
+      cleanupAudio();
       if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
         recognitionRef.current.stop();
       }
     };
   }, []);
 
-  const startRecording = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
+  // ===== Audio Meter =====
 
+  const startAudioMeter = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      streamRef.current = stream;
+      setMicPermission('granted');
+
+      const audioCtx = new AudioContext();
+      audioContextRef.current = audioCtx;
+
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      const draw = () => {
+        if (!analyserRef.current) return;
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+
+        if (canvasRef.current) {
+          const canvas = canvasRef.current;
+          const ctx = canvas.getContext('2d');
+          const W = canvas.width;
+          const H = canvas.height;
+
+          ctx.clearRect(0, 0, W, H);
+
+          const barCount = 40;
+          const barWidth = (W / barCount) - 1;
+
+          for (let i = 0; i < barCount; i++) {
+            const dataIndex = Math.floor((i / barCount) * dataArray.length);
+            const v = dataArray[dataIndex] / 255;
+            const barH = Math.max(2, v * H);
+
+            const gradient = ctx.createLinearGradient(0, H, 0, H - barH);
+            gradient.addColorStop(0, '#f97316');
+            gradient.addColorStop(1, '#fbbf24');
+
+            ctx.fillStyle = gradient;
+            const x = i * (barWidth + 1);
+            ctx.beginPath();
+            ctx.roundRect(x, H - barH, barWidth, barH, 2);
+            ctx.fill();
+          }
+        }
+
+        animFrameRef.current = requestAnimationFrame(draw);
+      };
+
+      draw();
+    } catch (err) {
+      console.error('Mic error:', err);
+      setMicPermission('denied');
+    }
+  };
+
+  const cleanupAudio = () => {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    analyserRef.current = null;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    // Clear canvas
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+  };
+
+  // ===== Recording =====
+
+  const startRecording = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setErrorMsg('このブラウザは音声認識をサポートしていません');
       setStatus('error');
@@ -43,14 +135,16 @@ export default function Home() {
 
     setStatus('recording');
     setIsRecording(true);
+    isRecordingRef.current = true;
     setTranscript('');
     setInterimTranscript('');
     setProcessed('');
     setErrorMsg('');
 
+    startAudioMeter();
+
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
-
     recognition.lang = settings?.language || 'ja-JP';
     recognition.interimResults = true;
     recognition.continuous = true;
@@ -76,17 +170,13 @@ export default function Home() {
       if (event.error !== 'aborted') {
         setErrorMsg(`音声認識エラー: ${event.error}`);
         setStatus('error');
+        cleanupAudio();
       }
     };
 
     recognition.onend = () => {
-      // If recording was still active (e.g., network timeout), restart
-      if (recognitionRef.current === recognition && isRecording) {
-        try {
-          recognition.start();
-        } catch (e) {
-          // Already stopped
-        }
+      if (isRecordingRef.current && recognitionRef.current === recognition) {
+        try { recognition.start(); } catch (_) {}
       }
     };
 
@@ -94,15 +184,20 @@ export default function Home() {
   };
 
   const stopRecording = async () => {
+    isRecordingRef.current = false;
     setIsRecording(false);
 
-    const finalText = transcript + interimTranscript;
+    const currentTranscript = transcript;
+    const currentInterim = interimTranscript;
+    const finalText = currentTranscript + currentInterim;
 
     if (recognitionRef.current) {
       recognitionRef.current.onend = null;
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+
+    cleanupAudio();
 
     if (!finalText.trim()) {
       setStatus('idle');
@@ -119,7 +214,6 @@ export default function Home() {
     if (result.success) {
       setProcessed(result.text);
       setStatus('done');
-
       if (settings?.autoInsert) {
         await window.electronAPI.insertText(result.text, finalText);
       }
@@ -137,9 +231,7 @@ export default function Home() {
     }
   };
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
-  };
+  const copyToClipboard = (text) => navigator.clipboard.writeText(text);
 
   if (!settings) return <div style={{ padding: 24, color: '#888' }}>読み込み中...</div>;
 
@@ -155,25 +247,27 @@ export default function Home() {
         </div>
       )}
 
-      {/* Hotkey info */}
+      {micPermission === 'denied' && (
+        <div className="alert alert-error">
+          🎤 マイクの使用が拒否されています。システム設定から許可してください。
+        </div>
+      )}
+
+      {/* Hotkey */}
       <div className="card">
         <div className="card-title">ホットキー</div>
         <div className="hotkey-display">
           <div style={{ marginBottom: 16 }}>
             <kbd style={{
-              background: '#242424',
-              border: '1px solid #3e3e3e',
-              borderRadius: 6,
-              padding: '8px 16px',
-              fontSize: 16,
-              fontFamily: 'monospace',
-              color: '#e8e8e8',
+              background: '#242424', border: '1px solid #3e3e3e',
+              borderRadius: 6, padding: '8px 16px',
+              fontSize: 16, fontFamily: 'monospace', color: '#e8e8e8',
             }}>
               {settings.hotkey}
             </kbd>
           </div>
           <p style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>
-            上のホットキーを押すと録音開始/停止します
+            どのアプリでもこのキーを押すと録音開始/停止します
           </p>
           <button
             className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'}`}
@@ -186,25 +280,33 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Recording indicator */}
+      {/* Recording State */}
       {status === 'recording' && (
         <div className="card">
-          <div className="recording-active">
-            <div className="recording-pulse">🎙️</div>
-            <div style={{ color: '#f97316', fontWeight: 600 }}>録音中...</div>
-            <div style={{ width: '100%' }}>
-              {transcript && (
-                <div className="transcript-box" style={{ marginBottom: 8 }}>
-                  {transcript}
-                </div>
-              )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <div className="recording-pulse" style={{ width: 14, height: 14, fontSize: 14 }}>🔴</div>
+            <span style={{ color: '#f97316', fontWeight: 600 }}>録音中...</span>
+          </div>
+
+          {/* Mic Level Meter */}
+          <canvas
+            ref={canvasRef}
+            width={480}
+            height={48}
+            style={{
+              width: '100%', height: 48,
+              borderRadius: 8, background: '#111', marginBottom: 14,
+            }}
+          />
+
+          {(transcript || interimTranscript) && (
+            <div className="transcript-box">
+              {transcript}
               {interimTranscript && (
-                <div className="transcript-box transcript-interim">
-                  {interimTranscript}
-                </div>
+                <span className="transcript-interim"> {interimTranscript}</span>
               )}
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -225,16 +327,12 @@ export default function Home() {
       {status === 'done' && (
         <div className="card">
           <div className="card-title">整形結果</div>
-          <div className="transcript-box" style={{ marginBottom: 12 }}>
-            {processed}
-          </div>
+          <div className="transcript-box" style={{ marginBottom: 12 }}>{processed}</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={() => copyToClipboard(processed)}>
               📋 コピー
             </button>
-            <button className="btn btn-ghost" onClick={() => setStatus('idle')}>
-              クリア
-            </button>
+            <button className="btn btn-ghost" onClick={() => setStatus('idle')}>クリア</button>
           </div>
           {transcript && (
             <div style={{ marginTop: 12 }}>
@@ -246,19 +344,17 @@ export default function Home() {
       )}
 
       {status === 'error' && (
-        <div className="alert alert-error">
-          ❌ {errorMsg}
-        </div>
+        <div className="alert alert-error">❌ {errorMsg}</div>
       )}
 
       {/* How to use */}
       <div className="card">
         <div className="card-title">使い方</div>
         <ol style={{ paddingLeft: 20, lineHeight: 2, fontSize: 14, color: '#ccc' }}>
-          <li>設定画面でClaude APIキーを入力</li>
+          <li>設定画面で Claude API キーを入力</li>
           <li>どのアプリでも <kbd style={{ background: '#242424', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>{settings.hotkey}</kbd> を押す</li>
-          <li>話す（録音中は画面下にインジケーターが表示）</li>
-          <li>もう一度ホットキーを押す → AIが整形してテキストを挿入</li>
+          <li>話す（音量メーターで入力を確認）</li>
+          <li>もう一度ホットキーを押す → AI が整形してテキストを自動挿入</li>
         </ol>
       </div>
     </div>
