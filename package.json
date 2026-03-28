@@ -1,6 +1,6 @@
 {
   "name": "water-voice",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI Voice Dictation powered by Claude API",
   "main": "main.js",
   "scripts": {
