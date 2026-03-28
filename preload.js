@@ -9,9 +9,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getHistory: () => ipcRenderer.invoke('get-history'),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
 
-  // Claude API
-  processWithClaude: (transcript, options) =>
-    ipcRenderer.invoke('process-with-claude', { transcript, options }),
+  // Gemini API
+  processAudioWithGemini: (audioBase64, mimeType, options) =>
+    ipcRenderer.invoke('process-audio-with-gemini', { audioBase64, mimeType, options }),
 
   // Text insertion
   insertText: (text, raw) => ipcRenderer.invoke('insert-text', { text, raw }),

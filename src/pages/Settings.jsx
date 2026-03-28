@@ -133,14 +133,14 @@ export default function Settings() {
 
       {/* API Key */}
       <div className="card">
-        <div className="card-title">Claude API キー</div>
+        <div className="card-title">Gemini API キー</div>
         <div className="form-group">
           <label className="form-label">API キー</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               type={showApiKey ? 'text' : 'password'}
               className="form-input"
-              placeholder="sk-ant-..."
+              placeholder="AIza..."
               value={settings.apiKey}
               onChange={(e) => update('apiKey', e.target.value)}
             />
@@ -149,7 +149,7 @@ export default function Settings() {
             </button>
           </div>
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            Anthropic Console から取得できます。キーはローカルに暗号化して保存されます。
+            Google AI Studio（aistudio.google.com）から取得できます。キーはローカルに暗号化して保存されます。
           </p>
         </div>
       </div>

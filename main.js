@@ -2,7 +2,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nati
 const path = require('path');
 const { exec } = require('child_process');
 const Store = require('electron-store');
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const store = new Store({
   defaults: {
@@ -195,56 +195,39 @@ async function insertText(text) {
   });
 }
 
-// ===== Claude API =====
+// ===== Gemini API =====
 
-async function processWithClaude(transcript, options = {}) {
+async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   const apiKey = store.get('apiKey');
   if (!apiKey) {
-    throw new Error('Claude API キーが設定されていません。設定画面で入力してください。');
+    throw new Error('Gemini API キーが設定されていません。設定画面で入力してください。');
   }
 
-  const client = new Anthropic({ apiKey });
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
   const dictionary = store.get('customDictionary', []);
   const removeFillers = options.removeFillers ?? store.get('removeFillers', true);
 
-  let systemPrompt = `あなたは音声文字起こしのテキスト整形アシスタントです。
-ユーザーが話した音声テキストを整形して返してください。
+  let prompt = `この音声を文字起こしして、以下のルールに従って整形したテキストのみを返してください。
 
 ルール:
 1. 意味を変えずに自然な文章に整形する
 2. ${removeFillers ? 'えー、あー、えっと、うーん などのフィラーワードを除去する' : 'フィラーワードはそのまま保持する'}
 3. 適切な句読点を追加する
 4. 段落区切りが自然な位置にあれば改行を入れる
-5. 整形したテキストのみを返す（説明文は不要）`;
+5. 整形したテキストのみを返す（説明文・前置き・補足は不要）`;
 
   if (dictionary.length > 0) {
-    systemPrompt += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
+    prompt += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
   }
 
-  // コマンド検出（"〜を削除", "〜に変更" などの編集指示）
-  const isCommand = /削除|変更|直して|修正|〜に変えて|replace|delete|change/i.test(transcript);
+  const result = await model.generateContent([
+    { inlineData: { data: audioBase64, mimeType } },
+    prompt,
+  ]);
 
-  if (isCommand) {
-    systemPrompt = `あなたはテキスト編集アシスタントです。
-ユーザーの音声コマンドを解釈してテキスト操作を行います。
-コマンドに従って修正したテキストのみを返してください。`;
-  }
-
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2048,
-    system: systemPrompt,
-    messages: [
-      {
-        role: 'user',
-        content: isCommand
-          ? transcript
-          : `以下の音声文字起こしを整形してください:\n\n${transcript}`,
-      },
-    ],
-  });
-
-  return message.content[0].text;
+  return result.response.text();
 }
 
 // ===== History =====
@@ -303,9 +286,9 @@ ipcMain.handle('clear-history', () => {
   return { success: true };
 });
 
-ipcMain.handle('process-with-claude', async (event, { transcript, options }) => {
+ipcMain.handle('process-audio-with-gemini', async (event, { audioBase64, mimeType, options }) => {
   try {
-    const result = await processWithClaude(transcript, options);
+    const result = await processAudioWithGemini(audioBase64, mimeType, options);
     return { success: true, text: result };
   } catch (error) {
     return { success: false, error: error.message };
