@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const LANGUAGES = [
   { value: 'ja-JP', label: '日本語' },
@@ -12,14 +12,84 @@ const LANGUAGES = [
   { value: 'es-ES', label: 'Español' },
 ];
 
-const HOTKEYS = [
-  'CommandOrControl+Shift+Space',
-  'CommandOrControl+Shift+V',
-  'CommandOrControl+Alt+Space',
-  'Alt+Space',
-  'F9',
-  'F10',
-];
+function keyEventToElectron(e) {
+  const parts = [];
+  if (e.metaKey) parts.push('Command');
+  if (e.ctrlKey) parts.push('Control');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+
+  const ignored = ['Meta', 'Control', 'Alt', 'Shift'];
+  if (!ignored.includes(e.key)) {
+    const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    parts.push(key);
+  }
+
+  return parts.length > 1 || (parts.length === 1 && !['Command','Control','Alt','Shift'].includes(parts[0]))
+    ? parts.join('+')
+    : null;
+}
+
+function HotkeyRecorder({ value, onChange }) {
+  const [recording, setRecording] = useState(false);
+  const inputRef = useRef(null);
+
+  const start = () => {
+    setRecording(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const handleKeyDown = (e) => {
+    e.preventDefault();
+    const hotkey = keyEventToElectron(e);
+    if (hotkey) {
+      onChange(hotkey);
+      setRecording(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <kbd style={{
+        display: 'inline-block',
+        padding: '6px 12px',
+        background: '#1a1a1a',
+        border: '1px solid #333',
+        borderRadius: 6,
+        fontFamily: 'monospace',
+        fontSize: 13,
+        color: '#ccc',
+        minWidth: 180,
+        textAlign: 'center',
+      }}>
+        {value}
+      </kbd>
+      {recording ? (
+        <input
+          ref={inputRef}
+          onKeyDown={handleKeyDown}
+          onBlur={() => setRecording(false)}
+          readOnly
+          placeholder="キーを押してください..."
+          style={{
+            background: '#1a3a5c',
+            border: '1px solid #4a9eff',
+            borderRadius: 6,
+            padding: '6px 12px',
+            color: '#fff',
+            fontSize: 13,
+            outline: 'none',
+            cursor: 'default',
+          }}
+        />
+      ) : (
+        <button className="btn btn-ghost" onClick={start} style={{ fontSize: 13 }}>
+          変更
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function Settings() {
   const [settings, setSettings] = useState(null);
@@ -89,15 +159,9 @@ export default function Settings() {
         <div className="card-title">ホットキー</div>
         <div className="form-group">
           <label className="form-label">録音開始/停止キー</label>
-          <select
-            className="form-select"
-            value={settings.hotkey}
-            onChange={(e) => update('hotkey', e.target.value)}
-          >
-            {HOTKEYS.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
+          <HotkeyRecorder value={settings.hotkey} onChange={(v) => update('hotkey', v)} />
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            変更後は保存が必要です。他のアプリと競合する場合は別のキーを選択してください。
+            「変更」を押してからキーを入力してください。変更後は保存が必要です。
           </p>
         </div>
       </div>
