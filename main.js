@@ -271,7 +271,8 @@ ipcMain.handle('save-settings', (event, settings) => {
     const success = registerHotkey(settings.hotkey);
     if (!success) {
       store.set('hotkey', oldHotkey);
-      return { success: false, error: 'ホットキーの登録に失敗しました' };
+      registerHotkey(oldHotkey);
+      return { success: false, error: `「${settings.hotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。` };
     }
     // Tray menu更新
     createTray();
