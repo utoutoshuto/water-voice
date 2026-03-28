@@ -22,6 +22,7 @@
       "entitlementsInherit": "entitlements.mac.plist",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "target": ["dmg", "zip"],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "音声入力のためにマイクへのアクセスが必要です。",
         "NSAppleEventsUsageDescription": "テキスト挿入のためにAppleScriptが必要です。",
@@ -30,7 +31,7 @@
     },
     "win": {
       "icon": "assets/icon.png",
-      "target": "nsis"
+      "target": ["nsis", "zip"]
     },
     "files": [
       "dist/**/*",
