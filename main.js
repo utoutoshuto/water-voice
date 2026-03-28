@@ -203,13 +203,11 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
     throw new Error('Gemini API キーが設定されていません。設定画面で入力してください。');
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
   const dictionary = store.get('customDictionary', []);
   const removeFillers = options.removeFillers ?? store.get('removeFillers', true);
 
-  let prompt = `この音声を文字起こしして、以下のルールに従って整形したテキストのみを返してください。
+  let systemInstruction = `あなたは音声文字起こし・テキスト整形アシスタントです。
+ユーザーから音声データが届いたら、以下のルールに従って処理したテキストのみを返してください。
 
 ルール:
 1. 意味を変えずに自然な文章に整形する
@@ -219,12 +217,18 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
 5. 整形したテキストのみを返す（説明文・前置き・補足は不要）`;
 
   if (dictionary.length > 0) {
-    prompt += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
+    systemInstruction += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
   }
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction,
+  });
 
   const result = await model.generateContent([
     { inlineData: { data: audioBase64, mimeType } },
-    prompt,
+    { text: 'この音声を文字起こしして整形してください。' },
   ]);
 
   return result.response.text();
