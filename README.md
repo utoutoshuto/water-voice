@@ -1,8 +1,8 @@
-# Aqua Voice
+# Water Voice
 
 AI音声入力アプリ。話した内容をClaudeがリアルタイムで整形・清書し、アクティブなアプリにそのまま貼り付けます。
 
-![Aqua Voice](assets/icon.png)
+![Water Voice](assets/icon.png)
 
 ## 概要
 

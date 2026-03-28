@@ -1,5 +1,5 @@
 {
-  "name": "aqua-voice",
+  "name": "water-voice",
   "version": "1.0.0",
   "description": "AI Voice Dictation powered by Claude API",
   "main": "main.js",
@@ -10,8 +10,8 @@
     "pack": "npm run build && electron-builder"
   },
   "build": {
-    "appId": "com.aqua-voice.app",
-    "productName": "Aqua Voice",
+    "appId": "com.water-voice.app",
+    "productName": "Water Voice",
     "directories": {
       "output": "release"
     },

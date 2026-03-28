@@ -35,7 +35,7 @@ function createMainWindow() {
       nodeIntegration: false,
     },
     titleBarStyle: 'hiddenInset',
-    title: 'Aqua Voice',
+    title: 'Water Voice',
     show: false,
   });
 
@@ -89,7 +89,7 @@ function createTray() {
   );
 
   tray = new Tray(icon);
-  tray.setToolTip('Aqua Voice');
+  tray.setToolTip('Water Voice');
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -360,9 +360,9 @@ async function checkMicrophonePermission() {
     const { response } = await dialog.showMessageBox({
       type: 'warning',
       title: 'マイクのアクセス権限が必要です',
-      message: 'Aqua Voice はマイクへのアクセスが許可されていません',
+      message: 'Water Voice はマイクへのアクセスが許可されていません',
       detail:
-        'システム設定 → プライバシーとセキュリティ → マイク で\nAqua Voice を許可してください。',
+        'システム設定 → プライバシーとセキュリティ → マイク で\nWater Voice を許可してください。',
       buttons: ['閉じる', 'システム設定を開く'],
       defaultId: 1,
     });
