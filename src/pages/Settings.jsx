@@ -12,20 +12,31 @@ const LANGUAGES = [
   { value: 'es-ES', label: 'Español' },
 ];
 
+const KEY_MAP = {
+  ' ': 'Space',
+  'ArrowLeft': 'Left',
+  'ArrowRight': 'Right',
+  'ArrowUp': 'Up',
+  'ArrowDown': 'Down',
+  'Enter': 'Return',
+};
+
 function keyEventToElectron(e) {
+  if (e.key === 'Escape') return null;
+
   const parts = [];
-  if (e.metaKey) parts.push('Command');
   if (e.ctrlKey) parts.push('Control');
   if (e.altKey) parts.push('Alt');
   if (e.shiftKey) parts.push('Shift');
+  if (e.metaKey) parts.push('Command');
 
   const ignored = ['Meta', 'Control', 'Alt', 'Shift'];
   if (!ignored.includes(e.key)) {
-    const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    const key = KEY_MAP[e.key] ?? (e.key.length === 1 ? e.key.toUpperCase() : e.key);
     parts.push(key);
   }
 
-  return parts.length > 1 || (parts.length === 1 && !['Command','Control','Alt','Shift'].includes(parts[0]))
+  return parts.length > 1 || (parts.length === 1 && !['Command', 'Control', 'Alt', 'Shift'].includes(parts[0]))
     ? parts.join('+')
     : null;
 }
@@ -41,6 +52,10 @@ function HotkeyRecorder({ value, onChange }) {
 
   const handleKeyDown = (e) => {
     e.preventDefault();
+    if (e.key === 'Escape') {
+      setRecording(false);
+      return;
+    }
     const hotkey = keyEventToElectron(e);
     if (hotkey) {
       onChange(hotkey);
