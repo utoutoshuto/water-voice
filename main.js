@@ -169,29 +169,25 @@ async function getActiveApp() {
 async function insertText(text) {
   clipboard.writeText(text);
 
+  const autoInsert = store.get('autoInsert', true);
+  if (!autoInsert) return;
+
   return new Promise((resolve) => {
     setTimeout(() => {
       if (process.platform === 'darwin') {
         exec(
           `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
-          (err) => {
-            resolve(!err);
-          }
+          (err) => { resolve(!err); }
         );
       } else if (process.platform === 'win32') {
         exec(
           `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"`,
-          (err) => {
-            resolve(!err);
-          }
+          (err) => { resolve(!err); }
         );
       } else {
-        // Linux: xdotool
-        exec('xdotool key ctrl+v', (err) => {
-          resolve(!err);
-        });
+        exec('xdotool key ctrl+v', (err) => { resolve(!err); });
       }
-    }, 100);
+    }, 500);
   });
 }
 
@@ -306,10 +302,7 @@ ipcMain.handle('insert-text', async (event, { text, raw }) => {
 
     addToHistory({ raw, processed: text });
 
-    const autoInsert = store.get('autoInsert', true);
-    if (autoInsert) {
-      await insertText(text);
-    }
+    await insertText(text);
 
     return { success: true };
   } catch (error) {

@@ -159,42 +159,45 @@ export default function Home() {
     recorder.onstop = async () => {
       cleanupAudio();
 
-      const chunks = audioChunksRef.current;
-      if (chunks.length === 0) {
-        setStatus('idle');
-        return;
-      }
-
-      const actualMimeType = recorder.mimeType || 'audio/webm';
-      const blob = new Blob(chunks, { type: actualMimeType });
-
-      if (blob.size < 1000) {
-        setStatus('idle');
-        return;
-      }
-
-      setStatus('processing');
-
-      const base64 = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.readAsDataURL(blob);
-      });
-
-      const result = await window.electronAPI.processAudioWithGemini(
-        base64,
-        actualMimeType.split(';')[0],
-        { removeFillers: settings?.removeFillers }
-      );
-
-      if (result.success) {
-        setProcessed(result.text);
-        setStatus('done');
-        if (settings?.autoInsert) {
-          await window.electronAPI.insertText(result.text, result.text);
+      try {
+        const chunks = audioChunksRef.current;
+        if (chunks.length === 0) {
+          setStatus('idle');
+          return;
         }
-      } else {
-        setErrorMsg(result.error);
+
+        const actualMimeType = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(chunks, { type: actualMimeType });
+
+        if (blob.size < 1000) {
+          setStatus('idle');
+          return;
+        }
+
+        setStatus('processing');
+
+        const base64 = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result.split(',')[1]);
+          reader.readAsDataURL(blob);
+        });
+
+        const result = await window.electronAPI.processAudioWithGemini(
+          base64,
+          actualMimeType.split(';')[0],
+          { removeFillers: settings?.removeFillers }
+        );
+
+        if (result.success) {
+          setProcessed(result.text);
+          setStatus('done');
+          await window.electronAPI.insertText(result.text, result.text);
+        } else {
+          setErrorMsg(result.error);
+          setStatus('error');
+        }
+      } catch (err) {
+        setErrorMsg(err.message);
         setStatus('error');
       }
     };
