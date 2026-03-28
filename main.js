@@ -228,7 +228,6 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
 
   const result = await model.generateContent([
     { inlineData: { data: audioBase64, mimeType } },
-    { text: 'この音声を文字起こしして整形してください。' },
   ]);
 
   return result.response.text();
