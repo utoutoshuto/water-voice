@@ -41,7 +41,7 @@
     ]
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
+    "@google/generative-ai": "^0.21.0",
     "electron-store": "^8.2.0"
   },
   "devDependencies": {

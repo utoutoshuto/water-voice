@@ -3,14 +3,13 @@ import React, { useState, useEffect, useRef } from 'react';
 export default function Home() {
   const [settings, setSettings] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
   const [processed, setProcessed] = useState('');
   const [status, setStatus] = useState('idle'); // idle | recording | processing | done | error
   const [errorMsg, setErrorMsg] = useState('');
   const [micPermission, setMicPermission] = useState('unknown');
 
-  const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const streamRef = useRef(null);
@@ -33,73 +32,60 @@ export default function Home() {
     return () => {
       window.electronAPI.removeRecordingStateListener();
       cleanupAudio();
-      if (recognitionRef.current) {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.stop();
-      }
     };
   }, []);
 
-  // ===== Audio Meter =====
+  // ===== Audio =====
 
-  const startAudioMeter = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      streamRef.current = stream;
-      setMicPermission('granted');
+  const startAudioMeter = (stream) => {
+    const audioCtx = new AudioContext();
+    audioContextRef.current = audioCtx;
 
-      const audioCtx = new AudioContext();
-      audioContextRef.current = audioCtx;
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyserRef.current = analyser;
 
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      analyserRef.current = analyser;
+    const source = audioCtx.createMediaStreamSource(stream);
+    source.connect(analyser);
 
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
+    const draw = () => {
+      if (!analyserRef.current) return;
 
-      const draw = () => {
-        if (!analyserRef.current) return;
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
 
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(dataArray);
+      if (canvasRef.current) {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
 
-        if (canvasRef.current) {
-          const canvas = canvasRef.current;
-          const ctx = canvas.getContext('2d');
-          const W = canvas.width;
-          const H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
 
-          ctx.clearRect(0, 0, W, H);
+        const barCount = 40;
+        const barWidth = (W / barCount) - 1;
 
-          const barCount = 40;
-          const barWidth = (W / barCount) - 1;
+        for (let i = 0; i < barCount; i++) {
+          const dataIndex = Math.floor((i / barCount) * dataArray.length);
+          const v = dataArray[dataIndex] / 255;
+          const barH = Math.max(2, v * H);
 
-          for (let i = 0; i < barCount; i++) {
-            const dataIndex = Math.floor((i / barCount) * dataArray.length);
-            const v = dataArray[dataIndex] / 255;
-            const barH = Math.max(2, v * H);
+          const gradient = ctx.createLinearGradient(0, H, 0, H - barH);
+          gradient.addColorStop(0, '#f97316');
+          gradient.addColorStop(1, '#fbbf24');
 
-            const gradient = ctx.createLinearGradient(0, H, 0, H - barH);
-            gradient.addColorStop(0, '#f97316');
-            gradient.addColorStop(1, '#fbbf24');
-
-            ctx.fillStyle = gradient;
-            const x = i * (barWidth + 1);
-            ctx.beginPath();
-            ctx.roundRect(x, H - barH, barWidth, barH, 2);
-            ctx.fill();
-          }
+          ctx.fillStyle = gradient;
+          const x = i * (barWidth + 1);
+          ctx.beginPath();
+          ctx.roundRect(x, H - barH, barWidth, barH, 2);
+          ctx.fill();
         }
+      }
 
-        animFrameRef.current = requestAnimationFrame(draw);
-      };
+      animFrameRef.current = requestAnimationFrame(draw);
+    };
 
-      draw();
-    } catch (err) {
-      console.error('Mic error:', err);
-      setMicPermission('denied');
-    }
+    draw();
   };
 
   const cleanupAudio = () => {
@@ -116,7 +102,6 @@ export default function Home() {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
-    // Clear canvas
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
@@ -125,102 +110,97 @@ export default function Home() {
 
   // ===== Recording =====
 
-  const startRecording = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setErrorMsg('このブラウザは音声認識をサポートしていません');
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      streamRef.current = stream;
+      setMicPermission('granted');
+
+      startAudioMeter(stream);
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.start(100);
+
+      setStatus('recording');
+      setIsRecording(true);
+      isRecordingRef.current = true;
+      setProcessed('');
+      setErrorMsg('');
+    } catch (err) {
+      console.error('Mic error:', err);
+      setMicPermission('denied');
+      setErrorMsg('マイクへのアクセスが拒否されました');
       setStatus('error');
-      return;
     }
-
-    setStatus('recording');
-    setIsRecording(true);
-    isRecordingRef.current = true;
-    setTranscript('');
-    setInterimTranscript('');
-    setProcessed('');
-    setErrorMsg('');
-
-    startAudioMeter();
-
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    recognition.lang = settings?.language || 'ja-JP';
-    recognition.interimResults = true;
-    recognition.continuous = true;
-    recognition.maxAlternatives = 1;
-
-    let finalText = '';
-
-    recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalText += result[0].transcript;
-        } else {
-          interim += result[0].transcript;
-        }
-      }
-      setTranscript(finalText);
-      setInterimTranscript(interim);
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error !== 'aborted') {
-        setErrorMsg(`音声認識エラー: ${event.error}`);
-        setStatus('error');
-        cleanupAudio();
-      }
-    };
-
-    recognition.onend = () => {
-      if (isRecordingRef.current && recognitionRef.current === recognition) {
-        try { recognition.start(); } catch (_) {}
-      }
-    };
-
-    recognition.start();
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     isRecordingRef.current = false;
     setIsRecording(false);
 
-    const currentTranscript = transcript;
-    const currentInterim = interimTranscript;
-    const finalText = currentTranscript + currentInterim;
-
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null;
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
-
-    cleanupAudio();
-
-    if (!finalText.trim()) {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      cleanupAudio();
       setStatus('idle');
       return;
     }
 
-    setStatus('processing');
-    setInterimTranscript('');
+    recorder.onstop = async () => {
+      cleanupAudio();
 
-    const result = await window.electronAPI.processWithClaude(finalText, {
-      removeFillers: settings?.removeFillers,
-    });
-
-    if (result.success) {
-      setProcessed(result.text);
-      setStatus('done');
-      if (settings?.autoInsert) {
-        await window.electronAPI.insertText(result.text, finalText);
+      const chunks = audioChunksRef.current;
+      if (chunks.length === 0) {
+        setStatus('idle');
+        return;
       }
-    } else {
-      setErrorMsg(result.error);
-      setStatus('error');
-    }
+
+      const actualMimeType = recorder.mimeType || 'audio/webm';
+      const blob = new Blob(chunks, { type: actualMimeType });
+
+      if (blob.size < 1000) {
+        setStatus('idle');
+        return;
+      }
+
+      setStatus('processing');
+
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(blob);
+      });
+
+      const result = await window.electronAPI.processAudioWithGemini(
+        base64,
+        actualMimeType.split(';')[0],
+        { removeFillers: settings?.removeFillers }
+      );
+
+      if (result.success) {
+        setProcessed(result.text);
+        setStatus('done');
+        if (settings?.autoInsert) {
+          await window.electronAPI.insertText(result.text, result.text);
+        }
+      } else {
+        setErrorMsg(result.error);
+        setStatus('error');
+      }
+    };
+
+    recorder.stop();
+    mediaRecorderRef.current = null;
   };
 
   const handleManualToggle = () => {
@@ -239,11 +219,11 @@ export default function Home() {
 
   return (
     <div>
-      <h1 className="page-title">🎙️ Aqua Voice</h1>
+      <h1 className="page-title">🎙️ Water Voice</h1>
 
       {noApiKey && (
         <div className="alert alert-info">
-          ⚠️ Claude API キーが未設定です。設定画面で入力してください。
+          ⚠️ Gemini API キーが未設定です。設定画面で入力してください。
         </div>
       )}
 
@@ -286,27 +266,18 @@ export default function Home() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <div className="recording-pulse" style={{ width: 14, height: 14, fontSize: 14 }}>🔴</div>
             <span style={{ color: '#f97316', fontWeight: 600 }}>録音中...</span>
+            <span style={{ color: '#888', fontSize: 13 }}>停止すると Gemini が認識します</span>
           </div>
 
-          {/* Mic Level Meter */}
           <canvas
             ref={canvasRef}
             width={480}
             height={48}
             style={{
               width: '100%', height: 48,
-              borderRadius: 8, background: '#111', marginBottom: 14,
+              borderRadius: 8, background: '#111',
             }}
           />
-
-          {(transcript || interimTranscript) && (
-            <div className="transcript-box">
-              {transcript}
-              {interimTranscript && (
-                <span className="transcript-interim"> {interimTranscript}</span>
-              )}
-            </div>
-          )}
         </div>
       )}
 
@@ -314,12 +285,7 @@ export default function Home() {
         <div className="card">
           <div style={{ textAlign: 'center', padding: 24, color: '#888' }}>
             <div style={{ fontSize: 24, marginBottom: 12 }}>⚙️</div>
-            <div>Claude API でテキストを整形中...</div>
-            {transcript && (
-              <div className="transcript-box" style={{ marginTop: 12, textAlign: 'left' }}>
-                {transcript}
-              </div>
-            )}
+            <div>Gemini が音声認識・整形中...</div>
           </div>
         </div>
       )}
@@ -334,12 +300,6 @@ export default function Home() {
             </button>
             <button className="btn btn-ghost" onClick={() => setStatus('idle')}>クリア</button>
           </div>
-          {transcript && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>元のテキスト:</div>
-              <div style={{ fontSize: 13, color: '#666' }}>{transcript}</div>
-            </div>
-          )}
         </div>
       )}
 
@@ -351,10 +311,10 @@ export default function Home() {
       <div className="card">
         <div className="card-title">使い方</div>
         <ol style={{ paddingLeft: 20, lineHeight: 2, fontSize: 14, color: '#ccc' }}>
-          <li>設定画面で Claude API キーを入力</li>
+          <li>設定画面で Gemini API キーを入力</li>
           <li>どのアプリでも <kbd style={{ background: '#242424', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>{settings.hotkey}</kbd> を押す</li>
           <li>話す（音量メーターで入力を確認）</li>
-          <li>もう一度ホットキーを押す → AI が整形してテキストを自動挿入</li>
+          <li>もう一度ホットキーを押す → Gemini が音声認識・整形してテキストを自動挿入</li>
         </ol>
       </div>
     </div>
