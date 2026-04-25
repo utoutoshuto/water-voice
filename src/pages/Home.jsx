@@ -16,6 +16,7 @@ export default function Home() {
   const animFrameRef = useRef(null);
   const canvasRef = useRef(null);
   const isRecordingRef = useRef(false);
+  const recordingStartTimeRef = useRef(null);
 
   useEffect(() => {
     window.electronAPI.getSettings().then(setSettings);
@@ -132,6 +133,7 @@ export default function Home() {
 
       recorder.start(100);
 
+      recordingStartTimeRef.current = Date.now();
       setStatus('recording');
       setIsRecording(true);
       isRecordingRef.current = true;
@@ -162,6 +164,7 @@ export default function Home() {
       try {
         const chunks = audioChunksRef.current;
         if (chunks.length === 0) {
+          await window.electronAPI.cancelRecording();
           setStatus('idle');
           return;
         }
@@ -170,6 +173,14 @@ export default function Home() {
         const blob = new Blob(chunks, { type: actualMimeType });
 
         if (blob.size < 1000) {
+          await window.electronAPI.cancelRecording();
+          setStatus('idle');
+          return;
+        }
+
+        const duration = Date.now() - (recordingStartTimeRef.current || 0);
+        if (duration < 3000) {
+          await window.electronAPI.cancelRecording();
           setStatus('idle');
           return;
         }
@@ -185,7 +196,7 @@ export default function Home() {
         const result = await window.electronAPI.processAudioWithGemini(
           base64,
           actualMimeType.split(';')[0],
-          { removeFillers: settings?.removeFillers }
+          { removeFillers: settings?.removeFillers, language: settings?.language }
         );
 
         if (result.success) {
@@ -193,10 +204,12 @@ export default function Home() {
           setStatus('done');
           await window.electronAPI.insertText(result.text, result.text);
         } else {
+          await window.electronAPI.cancelRecording();
           setErrorMsg(result.error);
           setStatus('error');
         }
       } catch (err) {
+        await window.electronAPI.cancelRecording();
         setErrorMsg(err.message);
         setStatus('error');
       }

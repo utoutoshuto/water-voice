@@ -68,6 +68,8 @@ function createOverlayWindow() {
   });
 
   overlayWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWindow.setAlwaysOnTop(true, 'floating');
   overlayWindow.hide();
 
   // Position: bottom center of screen
@@ -140,7 +142,17 @@ function toggleRecording() {
   isRecording = !isRecording;
 
   if (isRecording) {
-    overlayWindow.show();
+    // カーソル位置のディスプレイにOverlayを配置
+    const { screen } = require('electron');
+    const cursorPos = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursorPos);
+    const { x, y, width, height } = display.workArea;
+    overlayWindow.setPosition(
+      Math.floor(x + width / 2 - 110),
+      Math.floor(y + height - 100)
+    );
+
+    overlayWindow.showInactive();
     mainWindow.webContents.send('recording-state', { isRecording: true });
     overlayWindow.webContents.send('recording-state', { isRecording: true });
   } else {
@@ -201,8 +213,10 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
 
   const dictionary = store.get('customDictionary', []);
   const removeFillers = options.removeFillers ?? store.get('removeFillers', true);
+  const language = options.language ?? store.get('language', 'ja-JP');
 
   let systemInstruction = `あなたは音声文字起こし・テキスト整形アシスタントです。
+音声の言語は「${language}」です。その言語として自然な文章に整形してください。
 ユーザーから音声データが届いたら、以下のルールに従って処理したテキストのみを返してください。
 
 ルール:
@@ -217,16 +231,27 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    systemInstruction,
-  });
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
 
-  const result = await model.generateContent([
-    { inlineData: { data: audioBase64, mimeType } },
-  ]);
+  for (let i = 0; i < models.length; i++) {
+    const model = genAI.getGenerativeModel({
+      model: models[i],
+      systemInstruction,
+    });
 
-  return result.response.text();
+    try {
+      const result = await model.generateContent([
+        { inlineData: { data: audioBase64, mimeType } },
+      ]);
+      return result.response.text();
+    } catch (err) {
+      if (i < models.length - 1 && err.message && err.message.includes('503')) {
+        console.warn(`${models[i]} 503 → ${models[i + 1]} へフォールバック`);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 // ===== History =====
@@ -270,7 +295,11 @@ ipcMain.handle('save-settings', (event, settings) => {
       registerHotkey(oldHotkey);
       return { success: false, error: `「${settings.hotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。` };
     }
-    // Tray menu更新
+    // Tray menu更新（古いtrayを破棄してから再作成）
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
     createTray();
   }
 
@@ -317,9 +346,9 @@ ipcMain.handle('get-active-app', async () => {
 
 ipcMain.handle('cancel-recording', () => {
   isRecording = false;
+  // overlayを先にhideしてからstate送信することでちらつき防止
   overlayWindow.hide();
   mainWindow.webContents.send('recording-state', { isRecording: false });
-  overlayWindow.webContents.send('recording-state', { isRecording: false });
   return { success: true };
 });
 
