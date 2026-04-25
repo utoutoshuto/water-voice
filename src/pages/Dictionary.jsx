@@ -47,7 +47,7 @@ export default function Dictionary() {
     <div>
       <h1 className="page-title">📖 カスタム辞書</h1>
       <p style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>
-        固有名詞・専門用語・製品名などを登録すると、Claude APIが優先的に使用します。
+        固有名詞・専門用語・製品名などを登録すると、Gemini APIが優先的に使用します。
         最大800語まで登録可能です（{words.length}/800）。
       </p>
 
