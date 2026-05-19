@@ -12,8 +12,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Gemini API
   processAudioWithGemini: (audioBase64, mimeType, options) =>
     ipcRenderer.invoke('process-audio-with-gemini', { audioBase64, mimeType, options }),
+  testGeminiApiKey: (apiKey) => ipcRenderer.invoke('test-gemini-api-key', { apiKey }),
 
-  // Text insertion
+  // Generated text output
+  saveGeneratedText: (text, raw) => ipcRenderer.invoke('save-generated-text', { text, raw }),
+
+  // Kept for compatibility. This now saves to clipboard only.
   insertText: (text, raw) => ipcRenderer.invoke('insert-text', { text, raw }),
 
   // Active app
@@ -34,10 +38,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Events from main process
   onRecordingState: (callback) => {
-    ipcRenderer.on('recording-state', (event, data) => callback(data));
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('recording-state', listener);
+    return () => ipcRenderer.removeListener('recording-state', listener);
+  },
+
+  onRecordingCancelled: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('recording-cancelled', listener);
+    return () => ipcRenderer.removeListener('recording-cancelled', listener);
   },
 
   removeRecordingStateListener: () => {
     ipcRenderer.removeAllListeners('recording-state');
+    ipcRenderer.removeAllListeners('recording-cancelled');
   },
 });

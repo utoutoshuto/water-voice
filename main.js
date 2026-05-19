@@ -1,15 +1,51 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, systemPreferences } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, systemPreferences, shell } = require('electron');
 const path = require('path');
-const { exec } = require('child_process');
+const fs = require('fs');
+const { execFile } = require('child_process');
 const Store = require('electron-store');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const {
+  MAX_HISTORY,
+  GEMINI_MODELS,
+  RETRYABLE_STATUS_CODES,
+  normalizeDictionary,
+  normalizeSettings,
+  buildGeminiInstruction,
+  getErrorStatus,
+  classifyGeminiError,
+  validateAudioPayload,
+} = require('./src/shared/waterVoiceCore');
+
+const APP_NAME = 'Water Voice';
+const APP_DATA_DIR = app.getPath('appData');
+const APP_USER_DATA_DIR = path.join(APP_DATA_DIR, APP_NAME);
+
+app.setName(APP_NAME);
+app.setPath('userData', APP_USER_DATA_DIR);
+
+function migrateLegacyStore() {
+  const targetConfig = path.join(APP_USER_DATA_DIR, 'config.json');
+  if (fs.existsSync(targetConfig)) return;
+
+  const legacyConfigPaths = [
+    path.join(APP_DATA_DIR, 'water-voice', 'config.json'),
+    path.join(APP_DATA_DIR, 'Aqua Voice', 'config.json'),
+  ];
+
+  const sourceConfig = legacyConfigPaths.find((configPath) => fs.existsSync(configPath));
+  if (!sourceConfig) return;
+
+  fs.mkdirSync(APP_USER_DATA_DIR, { recursive: true });
+  fs.copyFileSync(sourceConfig, targetConfig);
+}
+
+migrateLegacyStore();
 
 const store = new Store({
   defaults: {
     apiKey: '',
     hotkey: 'CommandOrControl+Shift+Space',
     language: 'ja-JP',
-    autoInsert: true,
     removeFillers: true,
     customDictionary: [],
     history: [],
@@ -20,8 +56,61 @@ let mainWindow = null;
 let overlayWindow = null;
 let tray = null;
 let isRecording = false;
+let isQuitting = false;
 
-// ===== Window Creation =====
+const singleInstanceLock = app.requestSingleInstanceLock();
+
+if (!singleInstanceLock) {
+  app.exit(0);
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    execFile(command, args, { windowsHide: true }, (err, stdout) => {
+      resolve({ ok: !err, stdout: stdout ? stdout.trim() : '' });
+    });
+  });
+}
+
+function sendRecordingState(nextIsRecording) {
+  const payload = { isRecording: nextIsRecording };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('recording-state', payload);
+  }
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('recording-state', payload);
+  }
+}
+
+function stopRecordingState({ hideOverlay = true } = {}) {
+  isRecording = false;
+  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+  sendRecordingState(false);
+}
+
+function cancelRecordingState({ hideOverlay = true } = {}) {
+  isRecording = false;
+  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('recording-cancelled');
+  }
+}
+
+function positionOverlayNearCursor() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const { screen } = require('electron');
+  const cursorPos = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursorPos);
+  const { x, y, width, height } = display.workArea;
+  overlayWindow.setPosition(
+    Math.floor(x + width / 2 - 110),
+    Math.floor(y + height - 100)
+  );
+}
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -34,7 +123,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     title: 'Water Voice',
     show: false,
   });
@@ -46,8 +135,10 @@ function createMainWindow() {
   });
 
   mainWindow.on('close', (e) => {
-    e.preventDefault();
-    mainWindow.hide();
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+    }
   });
 }
 
@@ -59,7 +150,7 @@ function createOverlayWindow() {
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
-    focusable: false,
+    focusable: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -71,34 +162,22 @@ function createOverlayWindow() {
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.setAlwaysOnTop(true, 'floating');
   overlayWindow.hide();
-
-  // Position: bottom center of screen
-  const { screen } = require('electron');
-  const display = screen.getPrimaryDisplay();
-  const { width, height } = display.workAreaSize;
-  overlayWindow.setPosition(
-    Math.floor(width / 2 - 110),
-    height - 100
-  );
+  positionOverlayNearCursor();
 }
 
-// ===== Tray =====
-
 function createTray() {
-  // Use a simple template image or fallback to text
   const icon = nativeImage.createFromDataURL(
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAA7AAAAOwBeShxoQAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAADCSURBVFiF7ZYxCsIwFIa/tHQTvYCIg5uCp3DxEB7D0UP0Ai4O4iF0chQPIIqD4OABxKWDi0sTkrxHWqhD/+1/8l4+CISQkJDwX2TMXQB4AyZAn1mRATvgDKwBj6oCgFVVCdQF6lIVoC5Ql6oAdYG6VAWoC9SlKkBdoC5VAeoCdakKUBeoS1WAukBdqgLUBepSFaAuUJeqAHWBulQFqAvUpSpAXaAuVQHqAnWpClAXqEtVgLpAXaoC1AXqUhWgLlCXqgB1gbpUBagL1KUqQF2gLlUB6gJ1qQrQF6hLVfgCRwcYWEIyBxsAAAAASUVORK5CYII='
   );
 
   tray = new Tray(icon);
   tray.setToolTip('Water Voice');
-
-  const contextMenu = Menu.buildFromTemplate([
+  tray.setContextMenu(Menu.buildFromTemplate([
     {
       label: '設定を開く',
       click: () => {
-        mainWindow.show();
-        mainWindow.focus();
+        mainWindow?.show();
+        mainWindow?.focus();
       },
     },
     { type: 'separator' },
@@ -110,22 +189,32 @@ function createTray() {
     {
       label: '終了',
       click: () => {
-        app.exit(0);
+        isQuitting = true;
+        app.quit();
       },
     },
-  ]);
+  ]));
 
-  tray.setContextMenu(contextMenu);
   tray.on('double-click', () => {
-    mainWindow.show();
-    mainWindow.focus();
+    mainWindow?.show();
+    mainWindow?.focus();
   });
 }
 
-// ===== Global Hotkey =====
+function refreshTray() {
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  createTray();
+}
 
 function registerHotkey(hotkey) {
   globalShortcut.unregisterAll();
+
+  if (!hotkey || typeof hotkey !== 'string') {
+    return false;
+  }
 
   const success = globalShortcut.register(hotkey, () => {
     toggleRecording();
@@ -142,221 +231,117 @@ function toggleRecording() {
   isRecording = !isRecording;
 
   if (isRecording) {
-    // カーソル位置のディスプレイにOverlayを配置
-    const { screen } = require('electron');
-    const cursorPos = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursorPos);
-    const { x, y, width, height } = display.workArea;
-    overlayWindow.setPosition(
-      Math.floor(x + width / 2 - 110),
-      Math.floor(y + height - 100)
-    );
-
-    overlayWindow.showInactive();
-    mainWindow.webContents.send('recording-state', { isRecording: true });
-    overlayWindow.webContents.send('recording-state', { isRecording: true });
+    positionOverlayNearCursor();
+    overlayWindow?.showInactive();
+    sendRecordingState(true);
   } else {
-    mainWindow.webContents.send('recording-state', { isRecording: false });
-    overlayWindow.webContents.send('recording-state', { isRecording: false });
+    sendRecordingState(false);
   }
 }
 
-// ===== Text Insertion =====
-
-async function getActiveApp() {
-  return new Promise((resolve) => {
-    if (process.platform === 'darwin') {
-      exec(
-        `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`,
-        (err, stdout) => {
-          resolve(err ? 'Unknown' : stdout.trim());
-        }
-      );
-    } else {
-      resolve('Unknown');
-    }
-  });
-}
-
-async function insertText(text) {
+function saveGeneratedText(text) {
   clipboard.writeText(text);
-
-  const autoInsert = store.get('autoInsert', true);
-  if (!autoInsert) return;
-
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      if (process.platform === 'darwin') {
-        exec(
-          `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
-          (err) => { resolve(!err); }
-        );
-      } else if (process.platform === 'win32') {
-        exec(
-          `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"`,
-          (err) => { resolve(!err); }
-        );
-      } else {
-        exec('xdotool key ctrl+v', (err) => { resolve(!err); });
-      }
-    }, 500);
-  });
+  shell.beep();
+  return { copied: true, feedback: 'beep' };
 }
 
-// ===== Gemini API =====
-
-async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
-  const apiKey = store.get('apiKey');
-  if (!apiKey) {
-    throw new Error('Gemini API キーが設定されていません。設定画面で入力してください。');
-  }
-
-  const dictionary = store.get('customDictionary', []);
-  const removeFillers = options.removeFillers ?? store.get('removeFillers', true);
-  const language = options.language ?? store.get('language', 'ja-JP');
-
-  let systemInstruction = `あなたは音声文字起こし・テキスト整形アシスタントです。
-音声の言語は「${language}」です。その言語として自然な文章に整形してください。
-ユーザーから音声データが届いたら、以下のルールに従って処理したテキストのみを返してください。
-
-ルール:
-1. 意味を変えずに自然な文章に整形する
-2. ${removeFillers ? 'えー、あー、えっと、うーん などのフィラーワードを除去する' : 'フィラーワードはそのまま保持する'}
-3. 句読点を適切に追加する。話し言葉らしい自然なトーンを保ち、感情や強調が感じられる箇所には「！」や「？」を積極的に使う（文末が「。」で終わり過ぎないようにする）
-4. 段落区切りが自然な位置にあれば改行を入れる
-5. 整形したテキストのみを返す（説明文・前置き・補足は不要）`;
-
-  if (dictionary.length > 0) {
-    systemInstruction += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-
-  for (let i = 0; i < models.length; i++) {
-    const model = genAI.getGenerativeModel({
-      model: models[i],
-      systemInstruction,
-    });
-
-    try {
-      const result = await model.generateContent([
-        { inlineData: { data: audioBase64, mimeType } },
-      ]);
-      return result.response.text();
-    } catch (err) {
-      if (i < models.length - 1 && err.message && err.message.includes('503')) {
-        console.warn(`${models[i]} 503 → ${models[i + 1]} へフォールバック`);
-        continue;
-      }
-      throw err;
-    }
-  }
-}
-
-// ===== History =====
-
-function addToHistory(entry) {
-  const history = store.get('history', []);
-  history.unshift({
-    id: Date.now(),
-    timestamp: new Date().toISOString(),
-    ...entry,
-  });
-  // 最大100件保持
-  if (history.length > 100) history.pop();
-  store.set('history', history);
-}
-
-// ===== IPC Handlers =====
-
-ipcMain.handle('get-settings', () => {
+function getPublicSettings() {
   return {
     apiKey: store.get('apiKey'),
     hotkey: store.get('hotkey'),
     language: store.get('language'),
-    autoInsert: store.get('autoInsert'),
     removeFillers: store.get('removeFillers'),
-    customDictionary: store.get('customDictionary'),
+    customDictionary: normalizeDictionary(store.get('customDictionary')),
   };
-});
+}
 
-ipcMain.handle('save-settings', (event, settings) => {
-  const oldHotkey = store.get('hotkey');
-
-  Object.entries(settings).forEach(([key, value]) => {
-    store.set(key, value);
+function withTimeout(promise, timeoutMs) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Gemini request timeout')), timeoutMs);
   });
 
-  if (settings.hotkey && settings.hotkey !== oldHotkey) {
-    const success = registerHotkey(settings.hotkey);
-    if (!success) {
-      store.set('hotkey', oldHotkey);
-      registerHotkey(oldHotkey);
-      return { success: false, error: `「${settings.hotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。` };
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
+  validateAudioPayload(audioBase64, mimeType);
+
+  const apiKey = store.get('apiKey');
+  if (!apiKey) {
+    throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
+      errorCode: 'GEMINI_API_KEY_MISSING',
+    });
+  }
+
+  const dictionary = normalizeDictionary(store.get('customDictionary'));
+  const removeFillers = options?.removeFillers ?? store.get('removeFillers', true);
+  const language = options?.language ?? store.get('language', 'ja-JP');
+  const systemInstruction = buildGeminiInstruction({ language, removeFillers, dictionary });
+  const genAI = new GoogleGenerativeAI(apiKey);
+
+  let lastError = null;
+
+  for (const modelName of GEMINI_MODELS) {
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction,
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await withTimeout(
+          model.generateContent([{ inlineData: { data: audioBase64, mimeType } }]),
+          45000
+        );
+        const text = result.response.text().trim();
+        if (!text) {
+          throw new Error('Gemini APIから空の結果が返りました。');
+        }
+        return text;
+      } catch (error) {
+        lastError = error;
+        const status = getErrorStatus(error);
+        if (!RETRYABLE_STATUS_CODES.has(status) || attempt === 1) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+      }
     }
-    // Tray menu更新（古いtrayを破棄してから再作成）
-    if (tray) {
-      tray.destroy();
-      tray = null;
-    }
-    createTray();
   }
 
-  return { success: true };
-});
+  const classified = classifyGeminiError(lastError);
+  throw Object.assign(new Error(classified.error), { errorCode: classified.errorCode });
+}
 
-ipcMain.handle('get-history', () => {
-  return store.get('history', []);
-});
-
-ipcMain.handle('clear-history', () => {
-  store.set('history', []);
-  return { success: true };
-});
-
-ipcMain.handle('process-audio-with-gemini', async (event, { audioBase64, mimeType, options }) => {
-  try {
-    const result = await processAudioWithGemini(audioBase64, mimeType, options);
-    return { success: true, text: result };
-  } catch (error) {
-    return { success: false, error: error.message };
+async function testGeminiApiKey(apiKey) {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!key) {
+    throw Object.assign(new Error('Gemini APIキーを入力してください。'), {
+      errorCode: 'GEMINI_API_KEY_MISSING',
+    });
   }
-});
 
-ipcMain.handle('insert-text', async (event, { text, raw }) => {
-  try {
-    overlayWindow.hide();
-    isRecording = false;
+  const genAI = new GoogleGenerativeAI(key);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  await withTimeout(model.generateContent('Return only: ok'), 15000);
+}
 
-    addToHistory({ raw, processed: text });
+function addToHistory(entry) {
+  const processed = typeof entry?.processed === 'string' ? entry.processed.trim() : '';
+  const raw = typeof entry?.raw === 'string' ? entry.raw.trim() : '';
+  if (!processed) return;
 
-    await insertText(text);
+  const history = Array.isArray(store.get('history')) ? store.get('history') : [];
+  history.unshift({
+    id: Date.now(),
+    timestamp: new Date().toISOString(),
+    processed,
+    ...(raw && raw !== processed ? { raw } : {}),
+  });
 
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-ipcMain.handle('get-active-app', async () => {
-  const appName = await getActiveApp();
-  return appName;
-});
-
-ipcMain.handle('cancel-recording', () => {
-  isRecording = false;
-  // overlayを先にhideしてからstate送信することでちらつき防止
-  overlayWindow.hide();
-  mainWindow.webContents.send('recording-state', { isRecording: false });
-  return { success: true };
-});
-
-ipcMain.handle('is-overlay', (event) => {
-  return event.sender === overlayWindow.webContents;
-});
-
-// ===== Microphone Permission =====
+  store.set('history', history.slice(0, MAX_HISTORY));
+}
 
 async function checkMicrophonePermission() {
   if (process.platform !== 'darwin') return;
@@ -365,32 +350,138 @@ async function checkMicrophonePermission() {
 
   if (status === 'not-determined') {
     await systemPreferences.askForMediaAccess('microphone');
-  } else if (status === 'denied') {
+    return;
+  }
+
+  if (status === 'denied') {
     const { response } = await dialog.showMessageBox({
       type: 'warning',
-      title: 'マイクのアクセス権限が必要です',
-      message: 'Water Voice はマイクへのアクセスが許可されていません',
-      detail:
-        'システム設定 → プライバシーとセキュリティ → マイク で\nWater Voice を許可してください。',
+      title: 'マイクへのアクセス許可が必要です',
+      message: 'Water Voiceは音声入力のためにマイクへのアクセスが必要です。',
+      detail: 'システム設定 > プライバシーとセキュリティ > マイクでWater Voiceを許可してください。',
       buttons: ['閉じる', 'システム設定を開く'],
       defaultId: 1,
     });
+
     if (response === 1) {
-      exec(
-        'open x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
-      );
+      await runCommand('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone']);
     }
   }
 }
 
-// ===== Login Item =====
+ipcMain.handle('get-settings', () => getPublicSettings());
+
+ipcMain.handle('save-settings', (event, settings) => {
+  try {
+    const normalized = normalizeSettings(settings);
+    const oldHotkey = store.get('hotkey');
+
+    Object.entries(normalized).forEach(([key, value]) => {
+      store.set(key, value);
+    });
+
+    if (normalized.hotkey && normalized.hotkey !== oldHotkey) {
+      const success = registerHotkey(normalized.hotkey);
+      if (!success) {
+        store.set('hotkey', oldHotkey);
+        registerHotkey(oldHotkey);
+        return {
+          success: false,
+          errorCode: 'HOTKEY_REGISTER_FAILED',
+          error: `「${normalized.hotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。`,
+        };
+      }
+      refreshTray();
+    }
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, errorCode: 'SETTINGS_SAVE_FAILED', error: error.message };
+  }
+});
+
+ipcMain.handle('get-history', () => {
+  const history = store.get('history', []);
+  return Array.isArray(history) ? history : [];
+});
+
+ipcMain.handle('clear-history', () => {
+  store.set('history', []);
+  return { success: true };
+});
+
+ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
+  try {
+    const result = await processAudioWithGemini(payload.audioBase64, payload.mimeType, payload.options);
+    return { success: true, text: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+    };
+  }
+});
+
+ipcMain.handle('test-gemini-api-key', async (event, payload = {}) => {
+  try {
+    await testGeminiApiKey(payload.apiKey);
+    return { success: true };
+  } catch (error) {
+    const classified = classifyGeminiError(error);
+    return {
+      success: false,
+      error: error.errorCode ? error.message : classified.error,
+      errorCode: error.errorCode || classified.errorCode,
+    };
+  }
+});
+
+ipcMain.handle('insert-text', async (event, payload = {}) => {
+  try {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const raw = typeof payload.raw === 'string' ? payload.raw : '';
+    stopRecordingState({ hideOverlay: true });
+    addToHistory({ raw, processed: text });
+
+    const saveResult = saveGeneratedText(text);
+    return { success: true, ...saveResult };
+  } catch (error) {
+    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
+  }
+});
+
+ipcMain.handle('save-generated-text', async (event, payload = {}) => {
+  try {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const raw = typeof payload.raw === 'string' ? payload.raw : '';
+    stopRecordingState({ hideOverlay: true });
+    addToHistory({ raw, processed: text });
+
+    const saveResult = saveGeneratedText(text);
+    return { success: true, ...saveResult };
+  } catch (error) {
+    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
+  }
+});
+
+ipcMain.handle('get-active-app', async () => 'Unknown');
+
+ipcMain.handle('cancel-recording', () => {
+  cancelRecordingState({ hideOverlay: true });
+  return { success: true };
+});
+
+ipcMain.handle('is-overlay', (event) => {
+  return Boolean(overlayWindow && event.sender === overlayWindow.webContents);
+});
 
 ipcMain.handle('get-login-item', () => {
   return app.getLoginItemSettings().openAtLogin;
 });
 
 ipcMain.handle('set-login-item', (event, enabled) => {
-  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true });
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled), openAsHidden: true });
   return { success: true };
 });
 
@@ -399,24 +490,33 @@ ipcMain.handle('check-mic-permission', async () => {
   return systemPreferences.getMediaAccessStatus('microphone');
 });
 
-// ===== App Lifecycle =====
-
 app.whenReady().then(async () => {
   await checkMicrophonePermission();
   createMainWindow();
   createOverlayWindow();
   createTray();
-
-  const hotkey = store.get('hotkey');
-  registerHotkey(hotkey);
+  registerHotkey(store.get('hotkey'));
 
   app.on('activate', () => {
-    mainWindow.show();
+    mainWindow?.show();
   });
 });
 
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  // macOSではウィンドウを閉じてもアプリを終了しない
   if (process.platform !== 'darwin') {
     app.quit();
   }

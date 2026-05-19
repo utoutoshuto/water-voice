@@ -1,114 +1,104 @@
 # Water Voice
 
-AI音声入力アプリ。話した内容をClaudeがリアルタイムで整形・清書し、アクティブなアプリにそのまま貼り付けます。
+AI音声入力アプリ。話した音声をGemini APIで文字起こし・整形し、結果をクリップボードへ保存します。
 
 ![Water Voice](assets/icon.png)
 
-## 概要
+## Features
 
-グローバルホットキーを押して話すだけで、音声をテキストに変換しAIで整形した結果を自動でペーストします。会議メモ・メール・コード注釈など、キーボード入力が面倒なあらゆる場面で活用できます。
+- グローバルホットキーで録音開始/停止
+- Gemini APIによる音声認識と文章整形
+- フィラーワード除去、句読点付与、段落整形
+- クリップボード保存と完了音
+- カスタム辞書 最大800語
+- 履歴 最大100件
+- macOS / Windows対応
+- ログイン時の自動起動
+- APIキー接続確認
+- Escまたは録音オーバーレイクリックで録音キャンセル
 
-## 主な機能
-
-- **グローバルホットキー起動** — アプリを前面に出さずに任意のアプリから音声入力を開始
-- **リアルタイム音声認識** — Web Speech API によるライブ文字起こし
-- **AI整形（Claude API）** — フィラーワード除去・句読点付与・体裁統一を自動実行
-- **自動テキスト挿入** — 整形済みテキストをアクティブウィンドウへ自動ペースト
-- **音声メーター** — 録音中にマイク入力レベルをグラフィカルに表示
-- **カスタム辞書** — 固有名詞・技術用語を最大800語まで登録して誤認識を補正
-- **多言語対応** — 日本語・英語・中国語・韓国語・フランス語・ドイツ語・スペイン語など9言語
-- **履歴管理** — 過去100件の音声入力ログを閲覧・コピー・削除
-- **ログイン時自動起動** — OS起動時にバックグラウンドで常駐
-- **トレイアイコン常駐** — ドックに表示せずメニューバーから操作
-
-## 動作要件
+## Requirements
 
 | 項目 | 要件 |
-|------|------|
-| OS | macOS 10.13 以上 / Windows 10 以上 |
-| Node.js | 16 以上（開発時） |
-| Claude API キー | [Anthropic Console](https://console.anthropic.com/) で取得 |
-| マイク | 内蔵・外付け問わず任意のマイク |
+| --- | --- |
+| OS | macOS 10.13以上 / Windows 10以上 |
+| Node.js | 20以上 |
+| Gemini APIキー | Google AI Studioで取得 |
+| マイク | 任意の入力デバイス |
 
-> **macOS** ではマイクのアクセス許可とアクセシビリティ権限（テキスト挿入）が必要です。
+macOSではマイク権限が必要です。
 
-## セットアップ
-
-### 開発環境で起動
+## Setup
 
 ```bash
-# 依存パッケージのインストール
 npm install
-
-# 開発サーバー起動（webpack watch + Electron）
 npm run dev
 ```
 
-### アプリをビルド・パッケージ化
+## Build
 
 ```bash
-# Reactアプリをビルド
+# Rendererだけをビルド
 npm run build
 
-# .dmg（macOS）または .exe（Windows）を生成
+# 配布パッケージを生成
 npm run pack
 ```
 
-生成されたインストーラーは `release/` ディレクトリに出力されます。
+生成物は`release/`へ出力されます。
 
-## 使い方
+## Usage
 
-1. **初回設定** — アプリを起動し「設定」ページで Claude API キーを入力して保存
-2. **録音開始** — ホットキー（デフォルト: `Ctrl+Shift+Space`）を押す
-3. **話す** — 音声メーターが反応していることを確認しながら話す
-4. **録音停止** — 同じホットキーを再度押す
-5. **自動ペースト** — AIが整形したテキストがフォーカス中のアプリに自動挿入される
+1. 設定画面でGemini APIキーを入力して保存
+2. ホットキーを押して録音開始
+3. 話す
+4. もう一度ホットキーを押して録音停止
+5. Geminiが整形したテキストをクリップボードへ保存し、完了音を鳴らす
 
-## 設定項目
+既定ホットキーは`CommandOrControl+Shift+Space`です。
+録音中に`Esc`を押すか、録音オーバーレイをクリックすると録音を破棄します。
+
+## Settings
 
 | 設定 | 説明 |
-|------|------|
-| API キー | Claude API の認証キー |
-| ホットキー | 録音開始/停止のキー組み合わせ |
-| 入力言語 | 音声認識に使用する言語 |
-| 自動挿入 | 整形後に自動ペーストするかどうか |
-| ログイン時起動 | OS起動時に自動でアプリを立ち上げる |
-| カスタム辞書 | 誤認識されやすい固有名詞・専門用語の登録 |
+| --- | --- |
+| APIキー | Gemini APIの認証キー |
+| ホットキー | 録音開始/停止のキー |
+| 言語 | 音声認識に使う言語 |
+| フィラーワード除去 | 「えー」「あー」などを削除するか |
+| ログイン時に自動起動 | OS起動時にアプリを起動するか |
+| カスタム辞書 | 固有名詞や専門用語の優先語 |
 
-## 技術スタック
+## Project Structure
 
-| カテゴリ | 技術 |
-|----------|------|
-| デスクトップフレームワーク | [Electron](https://www.electronjs.org/) v30 |
-| UI | [React](https://react.dev/) v18 |
-| AI | [Anthropic Claude API](https://docs.anthropic.com/) (claude-sonnet-4-6) |
-| 音声認識 | Web Speech API |
-| ビルド | Webpack v5 + Babel |
-| パッケージング | electron-builder |
-| ストレージ | electron-store |
-
-## プロジェクト構成
-
-```
-aqua-voice/
-├── main.js              # Electronメインプロセス（IPC、Claude API呼び出し）
-├── preload.js           # レンダラーへのセキュアなAPI橋渡し
+```text
+water-voice/
+├── main.js
+├── preload.js
 ├── src/
-│   ├── App.jsx          # ルーティング・サイドバーナビ
-│   ├── renderer.jsx     # Reactエントリポイント
+│   ├── App.jsx
+│   ├── renderer.jsx
 │   ├── pages/
-│   │   ├── Home.jsx     # メイン録音・文字起こしUI
-│   │   ├── Settings.jsx # 設定画面
-│   │   ├── History.jsx  # 履歴画面
-│   │   ├── Dictionary.jsx # カスタム辞書管理
-│   │   └── Overlay.jsx  # 録音中フローティングオーバーレイ
+│   │   ├── Home.jsx
+│   │   ├── Settings.jsx
+│   │   ├── History.jsx
+│   │   ├── Dictionary.jsx
+│   │   └── Overlay.jsx
 │   └── styles/
-│       └── global.css   # ダークテーマスタイル
-├── assets/              # アイコン画像
-├── entitlements.mac.plist # macOSセキュリティ権限設定
-└── webpack.config.js    # Webpackビルド設定
+│       └── global.css
+├── assets/
+├── entitlements.mac.plist
+└── webpack.config.js
 ```
 
-## ライセンス
+## Notes
+
+- 既存の設定キーと履歴形式は維持しています。
+- 開発環境はNode.js 20系を推奨します。`.nvmrc`とVolta設定を同梱しています。
+- 自動貼り付けは行いません。整形済みテキストはクリップボードへ保存されます。
+- APIが混雑している場合は自動でリトライし、`gemini-2.5-flash`から`gemini-2.0-flash`へフォールバックします。
+- Windowsインストーラーはインストール開始時に起動中のWater Voiceを終了します。
+
+## License
 
 MIT

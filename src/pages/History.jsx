@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 
 export default function History() {
   const [history, setHistory] = useState([]);
@@ -10,7 +10,7 @@ export default function History() {
 
   const load = async () => {
     const data = await window.electronAPI.getHistory();
-    setHistory(data);
+    setHistory(Array.isArray(data) ? data : []);
   };
 
   const handleClear = async () => {
@@ -19,15 +19,15 @@ export default function History() {
     setHistory([]);
   };
 
-  const copy = (text, id) => {
-    navigator.clipboard.writeText(text);
+  const copy = async (text, id) => {
+    await navigator.clipboard.writeText(text);
     setCopied(id);
     setTimeout(() => setCopied(null), 1500);
   };
 
   const formatTime = (iso) => {
-    const d = new Date(iso);
-    return d.toLocaleString('ja-JP', {
+    const date = new Date(iso);
+    return date.toLocaleString('ja-JP', {
       month: 'numeric',
       day: 'numeric',
       hour: '2-digit',
@@ -38,7 +38,7 @@ export default function History() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h1 className="page-title" style={{ margin: 0 }}>📋 履歴</h1>
+        <h1 className="page-title" style={{ margin: 0 }}>履歴</h1>
         {history.length > 0 && (
           <button className="btn btn-danger" onClick={handleClear}>
             全削除
@@ -48,28 +48,30 @@ export default function History() {
 
       {history.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 48, color: '#666' }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>📭</div>
           <div>まだ履歴がありません</div>
         </div>
       ) : (
-        history.map((item) => (
-          <div key={item.id} className="history-item">
-            <div className="history-meta">
-              <span className="history-time">{formatTime(item.timestamp)}</span>
-              <button
-                className="btn btn-ghost"
-                style={{ padding: '4px 10px', fontSize: 12 }}
-                onClick={() => copy(item.processed || item.raw, item.id)}
-              >
-                {copied === item.id ? '✅ コピー済み' : '📋 コピー'}
-              </button>
+        history.map((item) => {
+          const text = item.processed || item.raw || '';
+          return (
+            <div key={item.id} className="history-item">
+              <div className="history-meta">
+                <span className="history-time">{formatTime(item.timestamp)}</span>
+                <button
+                  className="btn btn-ghost"
+                  style={{ padding: '4px 10px', fontSize: 12 }}
+                  onClick={() => copy(text, item.id)}
+                >
+                  {copied === item.id ? 'コピー済み' : 'コピー'}
+                </button>
+              </div>
+              <div className="history-text">{text}</div>
+              {item.raw && item.raw !== item.processed && (
+                <div className="history-raw">元: {item.raw}</div>
+              )}
             </div>
-            <div className="history-text">{item.processed}</div>
-            {item.raw && item.raw !== item.processed && (
-              <div className="history-raw">元: {item.raw}</div>
-            )}
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );

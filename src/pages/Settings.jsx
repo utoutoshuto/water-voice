@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 const LANGUAGES = [
   { value: 'ja-JP', label: '日本語' },
@@ -7,18 +7,18 @@ const LANGUAGES = [
   { value: 'zh-CN', label: '中文 (简体)' },
   { value: 'zh-TW', label: '中文 (繁體)' },
   { value: 'ko-KR', label: '한국어' },
-  { value: 'fr-FR', label: 'Français' },
+  { value: 'fr-FR', label: 'Francais' },
   { value: 'de-DE', label: 'Deutsch' },
-  { value: 'es-ES', label: 'Español' },
+  { value: 'es-ES', label: 'Espanol' },
 ];
 
 const KEY_MAP = {
   ' ': 'Space',
-  'ArrowLeft': 'Left',
-  'ArrowRight': 'Right',
-  'ArrowUp': 'Up',
-  'ArrowDown': 'Down',
-  'Enter': 'Return',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  Enter: 'Return',
 };
 
 function keyEventToElectron(e) {
@@ -36,9 +36,8 @@ function keyEventToElectron(e) {
     parts.push(key);
   }
 
-  return parts.length > 1 || (parts.length === 1 && !['Command', 'Control', 'Alt', 'Shift'].includes(parts[0]))
-    ? parts.join('+')
-    : null;
+  if (parts.length < 2) return null;
+  return parts.join('+');
 }
 
 function HotkeyRecorder({ value, onChange }) {
@@ -52,10 +51,6 @@ function HotkeyRecorder({ value, onChange }) {
 
   const handleKeyDown = (e) => {
     e.preventDefault();
-    if (e.key === 'Escape') {
-      setRecording(false);
-      return;
-    }
     const hotkey = keyEventToElectron(e);
     if (hotkey) {
       onChange(hotkey);
@@ -112,6 +107,8 @@ export default function Settings() {
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [apiKeyTestMsg, setApiKeyTestMsg] = useState('');
+  const [isTestingApiKey, setIsTestingApiKey] = useState(false);
 
   useEffect(() => {
     window.electronAPI.getSettings().then(setSettings);
@@ -123,7 +120,7 @@ export default function Settings() {
     setErrorMsg('');
     const result = await window.electronAPI.saveSettings(settings);
     if (result.success) {
-      setSavedMsg('設定を保存しました ✅');
+      setSavedMsg('設定を保存しました');
       setTimeout(() => setSavedMsg(''), 3000);
     } else {
       setErrorMsg(result.error);
@@ -132,7 +129,27 @@ export default function Settings() {
 
   const handleLoginToggle = async (enabled) => {
     setLaunchAtLogin(enabled);
-    await window.electronAPI.setLoginItem(enabled);
+    const result = await window.electronAPI.setLoginItem(enabled);
+    if (!result.success) {
+      setLaunchAtLogin(!enabled);
+      setErrorMsg(result.error || 'ログイン時起動の変更に失敗しました。');
+    }
+  };
+
+  const handleApiKeyTest = async () => {
+    setSavedMsg('');
+    setErrorMsg('');
+    setApiKeyTestMsg('');
+    setIsTestingApiKey(true);
+
+    const result = await window.electronAPI.testGeminiApiKey(settings.apiKey);
+    setIsTestingApiKey(false);
+
+    if (result.success) {
+      setApiKeyTestMsg('Gemini APIキーの接続確認に成功しました。');
+    } else {
+      setErrorMsg(result.error || 'Gemini APIキーの接続確認に失敗しました。');
+    }
   };
 
   const update = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }));
@@ -141,16 +158,16 @@ export default function Settings() {
 
   return (
     <div>
-      <h1 className="page-title">⚙️ 設定</h1>
+      <h1 className="page-title">設定</h1>
 
       {savedMsg && <div className="alert alert-success">{savedMsg}</div>}
+      {apiKeyTestMsg && <div className="alert alert-success">{apiKeyTestMsg}</div>}
       {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
 
-      {/* API Key */}
       <div className="card">
-        <div className="card-title">Gemini API キー</div>
+        <div className="card-title">Gemini APIキー</div>
         <div className="form-group">
-          <label className="form-label">API キー</label>
+          <label className="form-label">APIキー</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               type={showApiKey ? 'text' : 'password'}
@@ -160,28 +177,34 @@ export default function Settings() {
               onChange={(e) => update('apiKey', e.target.value)}
             />
             <button className="btn btn-ghost" onClick={() => setShowApiKey(!showApiKey)} style={{ flexShrink: 0 }}>
-              {showApiKey ? '🙈' : '👁'}
+              {showApiKey ? '隠す' : '表示'}
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={handleApiKeyTest}
+              disabled={!settings.apiKey || isTestingApiKey}
+              style={{ flexShrink: 0 }}
+            >
+              {isTestingApiKey ? '確認中' : '接続確認'}
             </button>
           </div>
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            Google AI Studio（aistudio.google.com）から取得できます。キーはローカルに暗号化して保存されます。
+            Google AI Studioで取得できます。キーはローカルに保存されます。
           </p>
         </div>
       </div>
 
-      {/* Hotkey */}
       <div className="card">
         <div className="card-title">ホットキー</div>
         <div className="form-group">
           <label className="form-label">録音開始/停止キー</label>
-          <HotkeyRecorder value={settings.hotkey} onChange={(v) => update('hotkey', v)} />
+          <HotkeyRecorder value={settings.hotkey} onChange={(value) => update('hotkey', value)} />
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            「変更」を押してからキーを入力してください。変更後は保存が必要です。
+            変更後は保存が必要です。登録できない場合は他のアプリと競合しています。
           </p>
         </div>
       </div>
 
-      {/* Language */}
       <div className="card">
         <div className="card-title">音声認識</div>
         <div className="form-group">
@@ -198,39 +221,33 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Behavior */}
       <div className="card">
         <div className="card-title">動作設定</div>
-        <div className="toggle-row">
-          <div>
-            <div className="toggle-label">自動テキスト挿入</div>
-            <div className="toggle-desc">整形後に自動でテキストを貼り付ける</div>
-          </div>
-          <label className="toggle">
-            <input type="checkbox" checked={settings.autoInsert}
-              onChange={(e) => update('autoInsert', e.target.checked)} />
-            <span className="toggle-slider" />
-          </label>
-        </div>
         <div className="toggle-row">
           <div>
             <div className="toggle-label">フィラーワード除去</div>
             <div className="toggle-desc">「えー」「あー」「えっと」などを自動削除</div>
           </div>
           <label className="toggle">
-            <input type="checkbox" checked={settings.removeFillers}
-              onChange={(e) => update('removeFillers', e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={settings.removeFillers}
+              onChange={(e) => update('removeFillers', e.target.checked)}
+            />
             <span className="toggle-slider" />
           </label>
         </div>
         <div className="toggle-row">
           <div>
             <div className="toggle-label">ログイン時に自動起動</div>
-            <div className="toggle-desc">OS 起動時にバックグラウンドで自動起動する</div>
+            <div className="toggle-desc">OS起動時にバックグラウンドで自動起動する</div>
           </div>
           <label className="toggle">
-            <input type="checkbox" checked={launchAtLogin}
-              onChange={(e) => handleLoginToggle(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={launchAtLogin}
+              onChange={(e) => handleLoginToggle(e.target.checked)}
+            />
             <span className="toggle-slider" />
           </label>
         </div>
