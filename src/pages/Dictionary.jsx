@@ -1,18 +1,26 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+
+const MAX_WORDS = 800;
 
 export default function Dictionary() {
   const [words, setWords] = useState([]);
   const [input, setInput] = useState('');
   const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    window.electronAPI.getSettings().then((s) => {
-      setWords(s.customDictionary || []);
+    window.electronAPI.getSettings().then((settings) => {
+      setWords(settings.customDictionary || []);
     });
   }, []);
 
   const save = async (newWords) => {
-    await window.electronAPI.saveSettings({ customDictionary: newWords });
+    const result = await window.electronAPI.saveSettings({ customDictionary: newWords });
+    if (!result.success) {
+      setErrorMsg(result.error || '辞書の保存に失敗しました。');
+      return;
+    }
+    setErrorMsg('');
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -23,10 +31,11 @@ export default function Dictionary() {
       setInput('');
       return;
     }
-    if (words.length >= 800) {
-      alert('カスタム辞書は最大800語まで登録できます');
+    if (words.length >= MAX_WORDS) {
+      setErrorMsg(`カスタム辞書は最大${MAX_WORDS}語まで登録できます。`);
       return;
     }
+
     const newWords = [...words, trimmed];
     setWords(newWords);
     save(newWords);
@@ -34,33 +43,34 @@ export default function Dictionary() {
   };
 
   const removeWord = (word) => {
-    const newWords = words.filter((w) => w !== word);
+    const newWords = words.filter((item) => item !== word);
     setWords(newWords);
     save(newWords);
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') addWord();
+  const handleKeyDown = (event) => {
+    if (event.key === 'Enter') addWord();
   };
 
   return (
     <div>
-      <h1 className="page-title">📖 カスタム辞書</h1>
+      <h1 className="page-title">カスタム辞書</h1>
       <p style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>
         固有名詞・専門用語・製品名などを登録すると、Gemini APIが優先的に使用します。
-        最大800語まで登録可能です（{words.length}/800）。
+        最大{MAX_WORDS}語まで登録可能です（{words.length}/{MAX_WORDS}）。
       </p>
 
-      {saved && <div className="alert alert-success">保存しました ✅</div>}
+      {saved && <div className="alert alert-success">保存しました</div>}
+      {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
 
       <div className="card">
         <div className="dict-input-row">
           <input
             type="text"
             className="form-input"
-            placeholder="単語を入力（Enterで追加）"
+            placeholder="単語を入力。Enterで追加"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
           />
           <button className="btn btn-primary" onClick={addWord}>
@@ -77,7 +87,7 @@ export default function Dictionary() {
             {words.map((word) => (
               <span key={word} className="dict-tag">
                 {word}
-                <button onClick={() => removeWord(word)}>×</button>
+                <button onClick={() => removeWord(word)} aria-label={`${word}を削除`}>x</button>
               </span>
             ))}
           </div>

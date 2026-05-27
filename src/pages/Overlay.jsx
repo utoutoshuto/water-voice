@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 
 const overlayStyles = {
   container: {
@@ -10,7 +10,8 @@ const overlayStyles = {
     borderRadius: 30,
     padding: '10px 18px',
     border: '1px solid rgba(249, 115, 22, 0.4)',
-    WebkitAppRegion: 'drag',
+    WebkitAppRegion: 'no-drag',
+    cursor: 'pointer',
     userSelect: 'none',
   },
   dot: {
@@ -26,7 +27,6 @@ const overlayStyles = {
     color: '#f97316',
   },
   processing: {
-    background: 'rgba(20, 20, 20, 0.92)',
     border: '1px solid rgba(59, 130, 246, 0.4)',
   },
   processingText: {
@@ -39,16 +39,11 @@ const overlayStyles = {
 };
 
 export default function Overlay() {
-  const [state, setState] = useState('recording'); // recording | processing
+  const [state, setState] = useState('recording');
 
   useEffect(() => {
     window.electronAPI.onRecordingState(({ isRecording }) => {
-      if (!isRecording) {
-        setState('processing');
-        // After insert is done, main process will hide the window
-      } else {
-        setState('recording');
-      }
+      setState(isRecording ? 'recording' : 'processing');
     });
 
     return () => {
@@ -80,16 +75,15 @@ export default function Overlay() {
           height: 60px;
         }
       `}</style>
-      <div style={{ ...overlayStyles.container, ...(isProcessing ? overlayStyles.processing : {}) }}>
-        <div style={{
-          ...overlayStyles.dot,
-          ...(isProcessing ? overlayStyles.processingDot : {}),
-        }} />
-        <span style={{
-          ...overlayStyles.text,
-          ...(isProcessing ? overlayStyles.processingText : {}),
-        }}>
-          {isProcessing ? '⚙️ 整形中...' : '🎙 録音中'}
+      <div
+        style={{ ...overlayStyles.container, ...(isProcessing ? overlayStyles.processing : {}) }}
+        onClick={() => {
+          if (!isProcessing) window.electronAPI.cancelRecording();
+        }}
+      >
+        <div style={{ ...overlayStyles.dot, ...(isProcessing ? overlayStyles.processingDot : {}) }} />
+        <span style={{ ...overlayStyles.text, ...(isProcessing ? overlayStyles.processingText : {}) }}>
+          {isProcessing ? '整形中...' : '録音中'}
         </span>
       </div>
     </>
