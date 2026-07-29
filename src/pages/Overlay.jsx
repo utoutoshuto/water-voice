@@ -39,17 +39,28 @@ const overlayStyles = {
 };
 
 export default function Overlay() {
-  const [state, setState] = useState('recording');
+  const [state, setState] = useState(null); // null | recording | processing
 
   useEffect(() => {
     window.electronAPI.onRecordingState(({ isRecording }) => {
       setState(isRecording ? 'recording' : 'processing');
     });
 
+    // ウィンドウ非表示中はCSSアニメーション(blink/spin)を止めてGPU/CPU負荷をなくす
+    const handleVisibility = () => {
+      if (document.hidden) {
+        setState(null);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       window.electronAPI.removeRecordingStateListener();
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
+
+  if (!state) return null;
 
   const isProcessing = state === 'processing';
 
