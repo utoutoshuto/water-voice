@@ -30,6 +30,8 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState('');
   const [micPermission, setMicPermission] = useState('unknown');
   const [copied, setCopied] = useState(false);
+  const [failedRecordingId, setFailedRecordingId] = useState(null);
+  const [retrying, setRetrying] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -158,6 +160,7 @@ export default function Home() {
     setNotice('');
     setErrorMsg('');
     setProcessed('');
+    setFailedRecordingId(null);
 
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
       setErrorMsg('この環境では音声録音に対応していません。');
@@ -220,8 +223,22 @@ export default function Home() {
     cleanupAudio();
   };
 
+  // 文字起こし失敗時、録音データをディスクへ一時保存してから通常のキャンセル処理を行う。
+  // これにより「再送信」ボタンから同じ音声データを送り直せる。
+  const handleTranscribeFailure = async (base64, mimeType, options, message) => {
+    const saved = await window.electronAPI.saveFailedRecording(base64, mimeType, options);
+    await window.electronAPI.cancelRecording();
+    setErrorMsg(message);
+    setFailedRecordingId(saved.success ? saved.id : null);
+    setStatus('error');
+  };
+
   const finishRecording = async (recorder) => {
     cleanupAudio();
+
+    let base64 = null;
+    let actualMimeType = null;
+    let requestOptions = null;
 
     try {
       const chunks = audioChunksRef.current;
@@ -234,7 +251,7 @@ export default function Home() {
         return;
       }
 
-      const actualMimeType = recorder.mimeType || getSupportedMimeType() || 'audio/webm';
+      actualMimeType = recorder.mimeType || getSupportedMimeType() || 'audio/webm';
       const blob = new Blob(chunks, { type: actualMimeType });
 
       if (blob.size < 1000) {
@@ -245,22 +262,21 @@ export default function Home() {
       }
 
       setStatus('processing');
-      const base64 = await readBlobAsBase64(blob);
+      base64 = await readBlobAsBase64(blob);
       const currentSettings = settingsRef.current || settings || {};
+      requestOptions = {
+        removeFillers: currentSettings.removeFillers,
+        language: currentSettings.language,
+      };
 
       const result = await window.electronAPI.processAudioWithGemini(
         base64,
         actualMimeType.split(';')[0],
-        {
-          removeFillers: currentSettings.removeFillers,
-          language: currentSettings.language,
-        }
+        requestOptions
       );
 
       if (!result.success) {
-        await window.electronAPI.cancelRecording();
-        setErrorMsg(result.error);
-        setStatus('error');
+        await handleTranscribeFailure(base64, actualMimeType.split(';')[0], requestOptions, result.error);
         return;
       }
 
@@ -274,15 +290,56 @@ export default function Home() {
         setNotice('整形は完了しましたが、クリップボード保存に失敗しました。');
       }
     } catch (err) {
-      await window.electronAPI.cancelRecording();
-      setErrorMsg(err.message || '録音処理に失敗しました。');
-      setStatus('error');
+      const message = err.message || '録音処理に失敗しました。';
+      if (base64) {
+        // Gemini呼び出し以降(ネットワーク断等)の失敗は録音データが残っているので保存する
+        await handleTranscribeFailure(base64, actualMimeType.split(';')[0], requestOptions, message);
+      } else {
+        await window.electronAPI.cancelRecording();
+        setErrorMsg(message);
+        setStatus('error');
+      }
     } finally {
       isStoppingRef.current = false;
       isRecordingRef.current = false;
       setIsRecording(false);
       mediaRecorderRef.current = null;
     }
+  };
+
+  const handleRetryFailedRecording = async () => {
+    if (!failedRecordingId) return;
+
+    setRetrying(true);
+    setStatus('processing');
+
+    const result = await window.electronAPI.retryFailedRecording(failedRecordingId);
+    setRetrying(false);
+
+    if (!result.success) {
+      setErrorMsg(result.error);
+      setStatus('error');
+      return;
+    }
+
+    setFailedRecordingId(null);
+    setProcessed(result.text);
+    setStatus('done');
+
+    const saveResult = await window.electronAPI.saveGeneratedText(result.text);
+    if (saveResult.success) {
+      setNotice('完了。テキストをクリップボードに保存しました。');
+    } else {
+      setNotice('整形は完了しましたが、クリップボード保存に失敗しました。');
+    }
+  };
+
+  const handleDiscardFailedRecording = async () => {
+    if (!failedRecordingId) return;
+    await window.electronAPI.discardFailedRecording(failedRecordingId);
+    setFailedRecordingId(null);
+    setErrorMsg('');
+    setStatus('idle');
   };
 
   const stopRecording = () => {
@@ -420,7 +477,19 @@ export default function Home() {
       )}
 
       {status === 'error' && (
-        <div className="alert alert-error">{errorMsg}</div>
+        <div className="alert alert-error">
+          <div>{errorMsg}</div>
+          {failedRecordingId && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button className="btn btn-primary" onClick={handleRetryFailedRecording} disabled={retrying}>
+                {retrying ? '再送信中...' : '録音データを再送信'}
+              </button>
+              <button className="btn btn-ghost" onClick={handleDiscardFailedRecording} disabled={retrying}>
+                破棄
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       <div className="card">

@@ -19,27 +19,11 @@ const {
 const APP_NAME = 'Water Voice';
 const APP_DATA_DIR = app.getPath('appData');
 const APP_USER_DATA_DIR = path.join(APP_DATA_DIR, APP_NAME);
+const FAILED_RECORDINGS_DIR = path.join(APP_USER_DATA_DIR, 'failed-recordings');
+const FAILED_RECORDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 app.setName(APP_NAME);
 app.setPath('userData', APP_USER_DATA_DIR);
-
-function migrateLegacyStore() {
-  const targetConfig = path.join(APP_USER_DATA_DIR, 'config.json');
-  if (fs.existsSync(targetConfig)) return;
-
-  const legacyConfigPaths = [
-    path.join(APP_DATA_DIR, 'water-voice', 'config.json'),
-    path.join(APP_DATA_DIR, 'Aqua Voice', 'config.json'),
-  ];
-
-  const sourceConfig = legacyConfigPaths.find((configPath) => fs.existsSync(configPath));
-  if (!sourceConfig) return;
-
-  fs.mkdirSync(APP_USER_DATA_DIR, { recursive: true });
-  fs.copyFileSync(sourceConfig, targetConfig);
-}
-
-migrateLegacyStore();
 
 const store = new Store({
   defaults: {
@@ -343,6 +327,59 @@ function addToHistory(entry) {
   store.set('history', history.slice(0, MAX_HISTORY));
 }
 
+// 文字起こし失敗時、録音データを消さずに一時保存しておくための仕組み。
+// 成功時 or ユーザーが明示的に破棄した時にのみファイルを削除する。
+function ensureFailedRecordingsDir() {
+  fs.mkdirSync(FAILED_RECORDINGS_DIR, { recursive: true });
+}
+
+function failedRecordingPaths(id) {
+  return {
+    audioPath: path.join(FAILED_RECORDINGS_DIR, `${id}.audio`),
+    metaPath: path.join(FAILED_RECORDINGS_DIR, `${id}.json`),
+  };
+}
+
+function saveFailedRecording(audioBase64, mimeType, options) {
+  ensureFailedRecordingsDir();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { audioPath, metaPath } = failedRecordingPaths(id);
+  fs.writeFileSync(audioPath, Buffer.from(audioBase64, 'base64'));
+  fs.writeFileSync(metaPath, JSON.stringify({ mimeType, options, createdAt: new Date().toISOString() }));
+  return id;
+}
+
+function loadFailedRecording(id) {
+  const { audioPath, metaPath } = failedRecordingPaths(id);
+  if (!fs.existsSync(audioPath) || !fs.existsSync(metaPath)) return null;
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  const audioBase64 = fs.readFileSync(audioPath).toString('base64');
+  return { audioBase64, mimeType: meta.mimeType, options: meta.options };
+}
+
+function deleteFailedRecording(id) {
+  const { audioPath, metaPath } = failedRecordingPaths(id);
+  [audioPath, metaPath].forEach((filePath) => {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  });
+}
+
+function cleanupOldFailedRecordings() {
+  try {
+    ensureFailedRecordingsDir();
+    const now = Date.now();
+    fs.readdirSync(FAILED_RECORDINGS_DIR).forEach((file) => {
+      const filePath = path.join(FAILED_RECORDINGS_DIR, file);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > FAILED_RECORDING_MAX_AGE_MS) {
+        fs.unlinkSync(filePath);
+      }
+    });
+  } catch (error) {
+    console.error('Failed to cleanup old failed recordings:', error);
+  }
+}
+
 async function checkMicrophonePermission() {
   if (process.platform !== 'darwin') return;
 
@@ -472,6 +509,43 @@ ipcMain.handle('cancel-recording', () => {
   return { success: true };
 });
 
+ipcMain.handle('save-failed-recording', (event, payload = {}) => {
+  try {
+    const id = saveFailedRecording(payload.audioBase64, payload.mimeType, payload.options);
+    return { success: true, id };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('retry-failed-recording', async (event, payload = {}) => {
+  try {
+    const record = loadFailedRecording(payload.id);
+    if (!record) {
+      return { success: false, error: '保存された録音データが見つかりません。' };
+    }
+
+    const text = await processAudioWithGemini(record.audioBase64, record.mimeType, record.options);
+    deleteFailedRecording(payload.id);
+    return { success: true, text };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+    };
+  }
+});
+
+ipcMain.handle('discard-failed-recording', (event, payload = {}) => {
+  try {
+    deleteFailedRecording(payload.id);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('is-overlay', (event) => {
   return Boolean(overlayWindow && event.sender === overlayWindow.webContents);
 });
@@ -492,6 +566,7 @@ ipcMain.handle('check-mic-permission', async () => {
 
 app.whenReady().then(async () => {
   await checkMicrophonePermission();
+  cleanupOldFailedRecordings();
   createMainWindow();
   createOverlayWindow();
   createTray();
