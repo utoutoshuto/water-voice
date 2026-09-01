@@ -270,6 +270,9 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
     const model = genAI.getGenerativeModel({
       model: modelName,
       systemInstruction,
+      generationConfig: {
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -307,7 +310,7 @@ async function testGeminiApiKey(apiKey) {
   }
 
   const genAI = new GoogleGenerativeAI(key);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
   await withTimeout(model.generateContent('Return only: ok'), 15000);
 }
 

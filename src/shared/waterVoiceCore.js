@@ -1,7 +1,7 @@
 const MAX_HISTORY = 100;
 const MAX_DICTIONARY_WORDS = 800;
 const MAX_AUDIO_BASE64_LENGTH = 40 * 1024 * 1024;
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-2.5-flash'];
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 503, 504]);
 const ALLOWED_SETTINGS_KEYS = new Set([
   'apiKey',
