@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Recording control
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
 
+  // Failed recording recovery (文字起こし失敗時の録音データ保全)
+  saveFailedRecording: (audioBase64, mimeType, options) =>
+    ipcRenderer.invoke('save-failed-recording', { audioBase64, mimeType, options }),
+  retryFailedRecording: (id) => ipcRenderer.invoke('retry-failed-recording', { id }),
+  discardFailedRecording: (id) => ipcRenderer.invoke('discard-failed-recording', { id }),
+
   // Login item
   getLoginItem: () => ipcRenderer.invoke('get-login-item'),
   setLoginItem: (enabled) => ipcRenderer.invoke('set-login-item', enabled),
