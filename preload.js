@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // History
   getHistory: () => ipcRenderer.invoke('get-history'),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
+  deleteHistoryEntry: (id) => ipcRenderer.invoke('delete-history-entry', id),
+  updateHistoryEntry: (id, text) => ipcRenderer.invoke('update-history-entry', { id, text }),
 
   // Gemini API
   processAudioWithGemini: (audioBase64, mimeType, options) =>
