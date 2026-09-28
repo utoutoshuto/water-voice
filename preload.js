@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Gemini API
   processAudioWithGemini: (audioBase64, mimeType, options) =>
     ipcRenderer.invoke('process-audio-with-gemini', { audioBase64, mimeType, options }),
-  testGeminiApiKey: (apiKey) => ipcRenderer.invoke('test-gemini-api-key', { apiKey }),
+  testGeminiApiKey: (apiKey, model) => ipcRenderer.invoke('test-gemini-api-key', { apiKey, model }),
 
   // Generated text output
   saveGeneratedText: (text, raw) => ipcRenderer.invoke('save-generated-text', { text, raw }),

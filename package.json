@@ -9,7 +9,7 @@
     "build": "webpack --mode production",
     "dist": "npm run build && electron-builder",
     "pack": "npm run dist",
-    "test": "node --test tests"
+    "test": "node --test tests/*.test.js"
   },
   "engines": {
     "node": ">=20 <23",
@@ -63,7 +63,7 @@
     ]
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^2.24.0",
     "electron-store": "^8.2.0"
   },
   "devDependencies": {

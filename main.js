@@ -3,16 +3,19 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const Store = require('electron-store');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const {
   MAX_HISTORY,
-  GEMINI_MODELS,
+  DEFAULT_GEMINI_MODEL,
   RETRYABLE_STATUS_CODES,
   normalizeDictionary,
+  normalizeSnippets,
   normalizeSettings,
+  getGeminiModelOrder,
   buildGeminiInstruction,
   getErrorStatus,
   classifyGeminiError,
+  shouldFallbackGeminiError,
   validateAudioPayload,
 } = require('./src/shared/waterVoiceCore');
 
@@ -30,8 +33,12 @@ const store = new Store({
     apiKey: '',
     hotkey: 'CommandOrControl+Shift+Space',
     language: 'ja-JP',
+    model: DEFAULT_GEMINI_MODEL,
     removeFillers: true,
     customDictionary: [],
+    customInstructions: '',
+    outputLanguage: 'same',
+    snippets: [],
     history: [],
   },
 });
@@ -234,18 +241,31 @@ function getPublicSettings() {
     apiKey: store.get('apiKey'),
     hotkey: store.get('hotkey'),
     language: store.get('language'),
+    model: store.get('model', DEFAULT_GEMINI_MODEL),
     removeFillers: store.get('removeFillers'),
     customDictionary: normalizeDictionary(store.get('customDictionary')),
+    customInstructions: store.get('customInstructions', ''),
+    outputLanguage: store.get('outputLanguage', 'same'),
+    snippets: normalizeSnippets(store.get('snippets')),
   };
 }
 
-function withTimeout(promise, timeoutMs) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Gemini request timeout')), timeoutMs);
-  });
+async function withTimeout(request, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  try {
+    return await request(controller.signal);
+  } catch (error) {
+    if (timedOut) throw new Error('Gemini request timeout');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
@@ -259,29 +279,37 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   }
 
   const dictionary = normalizeDictionary(store.get('customDictionary'));
+  const snippets = normalizeSnippets(store.get('snippets'));
   const removeFillers = options?.removeFillers ?? store.get('removeFillers', true);
   const language = options?.language ?? store.get('language', 'ja-JP');
-  const systemInstruction = buildGeminiInstruction({ language, removeFillers, dictionary });
-  const genAI = new GoogleGenerativeAI(apiKey);
+  const customInstructions = store.get('customInstructions', '');
+  const outputLanguage = store.get('outputLanguage', 'same');
+  const systemInstruction = buildGeminiInstruction({
+    language,
+    removeFillers,
+    dictionary,
+    customInstructions,
+    outputLanguage,
+    snippets,
+  });
+  const ai = new GoogleGenAI({ apiKey });
 
   let lastError = null;
 
-  for (const modelName of GEMINI_MODELS) {
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      systemInstruction,
-      generationConfig: {
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
-
+  for (const modelName of getGeminiModelOrder(store.get('model', DEFAULT_GEMINI_MODEL))) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const result = await withTimeout(
-          model.generateContent([{ inlineData: { data: audioBase64, mimeType } }]),
-          45000
+        const result = await withTimeout((abortSignal) => ai.models.generateContent({
+          model: modelName,
+          contents: [{ inlineData: { data: audioBase64, mimeType } }],
+          config: {
+            systemInstruction,
+            thinkingConfig: { thinkingBudget: 0 },
+            abortSignal,
+          },
+        }), 45000
         );
-        const text = result.response.text().trim();
+        const text = result.text?.trim();
         if (!text) {
           throw new Error('Gemini APIから空の結果が返りました。');
         }
@@ -295,13 +323,14 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
         await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
       }
     }
+    if (!shouldFallbackGeminiError(lastError)) break;
   }
 
   const classified = classifyGeminiError(lastError);
   throw Object.assign(new Error(classified.error), { errorCode: classified.errorCode });
 }
 
-async function testGeminiApiKey(apiKey) {
+async function testGeminiApiKey(apiKey, model) {
   const key = typeof apiKey === 'string' ? apiKey.trim() : '';
   if (!key) {
     throw Object.assign(new Error('Gemini APIキーを入力してください。'), {
@@ -309,9 +338,13 @@ async function testGeminiApiKey(apiKey) {
     });
   }
 
-  const genAI = new GoogleGenerativeAI(key);
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-  await withTimeout(model.generateContent('Return only: ok'), 15000);
+  const ai = new GoogleGenAI({ apiKey: key });
+  const [modelName] = getGeminiModelOrder(model || store.get('model', DEFAULT_GEMINI_MODEL));
+  await withTimeout((abortSignal) => ai.models.generateContent({
+    model: modelName,
+    contents: 'Return only: ok',
+    config: { thinkingConfig: { thinkingBudget: 0 }, abortSignal },
+  }), 15000);
 }
 
 function addToHistory(entry) {
@@ -465,7 +498,7 @@ ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
 
 ipcMain.handle('test-gemini-api-key', async (event, payload = {}) => {
   try {
-    await testGeminiApiKey(payload.apiKey);
+    await testGeminiApiKey(payload.apiKey, payload.model);
     return { success: true };
   } catch (error) {
     const classified = classifyGeminiError(error);
