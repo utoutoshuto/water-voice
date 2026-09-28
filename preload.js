@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Accessibility permission (macOS の自動貼り付けに必要)
   getAccessibilityStatus: () => ipcRenderer.invoke('get-accessibility-status'),
   openAccessibilitySettings: () => ipcRenderer.invoke('open-accessibility-settings'),
+  resetAccessibilityPermission: () => ipcRenderer.invoke('reset-accessibility-permission'),
 
   // Recording control
   // ユーザー起点のキャンセル (Esc / オーバーレイクリック)

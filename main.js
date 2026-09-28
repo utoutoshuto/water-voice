@@ -39,6 +39,7 @@ const {
   resolveOutputAction,
   shouldRestoreClipboard,
   buildCommandRequest,
+  describeOutputResult,
 } = require('./src/shared/outputCore');
 
 const APP_NAME = 'Water Voice';
@@ -509,6 +510,21 @@ function beginOutputSession(mode) {
 
 // 整形結果を出力する。自動貼り付けが有効なら録音開始時の前面アプリへ貼り、
 // 使えない場合はクリップボード保存 + beep にフォールバックする。
+// 自動貼り付けできなかった理由を通知する。ウィンドウを閉じて使っていても気づけるようにする。
+function notifyPasteFallback(reason) {
+  const notable = [OUTPUT_FALLBACK_REASON.ACCESSIBILITY, OUTPUT_FALLBACK_REASON.PASTE_FAILED];
+  if (!notable.includes(reason) || !Notification.isSupported()) return;
+  const notification = new Notification({
+    title: '自動貼り付けできませんでした',
+    body: `${describeOutputResult({ pasted: false, reason })} 設定 > 出力 を確認してください。`,
+  });
+  notification.on('click', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+  notification.show();
+}
+
 async function saveGeneratedText(text, session) {
   const target = session ? await session.targetPromise : null;
   const decision = resolveOutputAction({
@@ -521,6 +537,7 @@ async function saveGeneratedText(text, session) {
   const saveToClipboard = (reason) => {
     clipboard.writeText(text);
     shell.beep();
+    notifyPasteFallback(reason);
     return { copied: true, pasted: false, reason, feedback: 'beep' };
   };
 
@@ -926,6 +943,16 @@ ipcMain.handle('save-generated-text', async (event, payload = {}) => {
 
 ipcMain.handle('get-accessibility-status', () => getAccessibilityStatus());
 
+// 署名が変わる前の許可記録が残っていると、ON にしても効かない。記録を消して登録し直す。
+ipcMain.handle('reset-accessibility-permission', async () => {
+  if (process.platform !== 'darwin') return { success: false };
+  await runCommand('tccutil', ['reset', 'Accessibility', app.isPackaged ? 'com.water-voice.app' : 'com.github.Electron']);
+  await runCommand('tccutil', ['reset', 'AppleEvents', app.isPackaged ? 'com.water-voice.app' : 'com.github.Electron']);
+  systemPreferences.isTrustedAccessibilityClient(true);
+  const { ok } = await runCommand('open', [ACCESSIBILITY_SETTINGS_URL]);
+  return { success: ok };
+});
+
 ipcMain.handle('open-accessibility-settings', async () => {
   if (process.platform !== 'darwin') return { success: false };
   // prompt 付きで問い合わせると、システム設定の一覧に Water Voice が追加される
@@ -1254,6 +1281,10 @@ app.whenReady().then(async () => {
   registerHotkey(store.get('hotkey'));
   registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY));
   startAutoUpdate();
+  // 自動貼り付けが有効なのに許可がなければ、macOS 標準の許可ダイアログを出して一覧に登録させる
+  if (process.platform === 'darwin' && store.get('autoPaste', true) && !isAccessibilityTrusted()) {
+    systemPreferences.isTrustedAccessibilityClient(true);
+  }
 
   app.on('activate', () => {
     mainWindow?.show();

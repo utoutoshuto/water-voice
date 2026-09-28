@@ -22,28 +22,34 @@ const OUTPUT_FALLBACK_REASON = Object.freeze({
 
 const SUPPORTED_PASTE_PLATFORMS = new Set(['darwin', 'win32']);
 
-const FRONTMOST_APP_SCRIPT = [
-  'tell application "System Events"',
-  'set frontApp to first application process whose frontmost is true',
-  'return (unix id of frontApp as text) & tab & (name of frontApp)',
-  'end tell',
-].join('\n');
+// 前面アプリの pid と名前を lsappinfo で取得する。System Events 経由と違い、オートメーション許可が不要。
+const FRONTMOST_APP_SHELL = 'a=$(lsappinfo front) && lsappinfo info -only pid "$a" && lsappinfo info -only name "$a"';
 
 function getFrontmostAppCommand(platform) {
   if (platform !== 'darwin') return null;
-  return { command: 'osascript', args: ['-e', FRONTMOST_APP_SCRIPT] };
+  return { command: '/bin/sh', args: ['-c', FRONTMOST_APP_SHELL] };
 }
 
-// osascript の出力 "<pid>\t<name>" を解釈する。selfPid と一致すれば Water Voice 自身が前面。
+// 前面アプリ情報を解釈する。lsappinfo の出力("pid"=123 / "LSDisplayName"="Safari")と
+// 旧形式 "<pid>\t<name>" の両方に対応。selfPid と一致すれば Water Voice 自身が前面。
 function parseFrontmostApp(stdout, selfPid) {
-  const [pidText = '', ...nameParts] = String(stdout || '').trim().split('\t');
-  const pid = Number.parseInt(pidText, 10);
+  const text = String(stdout || '').trim();
+  let pid = NaN;
+  let name = '';
+
+  const pidMatch = text.match(/"?pid"?\s*=\s*(\d+)/);
+  if (pidMatch) {
+    pid = Number.parseInt(pidMatch[1], 10);
+    const nameMatch = text.match(/"(?:LSDisplayName|name)"\s*=\s*"([^"]*)"/) || text.match(/^"([^"]+)"\s+ASN:/m);
+    name = nameMatch ? nameMatch[1] : '';
+  } else {
+    const [pidText = '', ...nameParts] = text.split('\t');
+    if (/^\d+$/.test(pidText)) pid = Number.parseInt(pidText, 10);
+    name = nameParts.join('\t').trim();
+  }
+
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  return {
-    pid,
-    name: nameParts.join('\t').trim(),
-    isSelf: pid === selfPid,
-  };
+  return { pid, name, isSelf: pid === selfPid };
 }
 
 // 前面アプリへ Cmd/Ctrl+V (paste) または Cmd/Ctrl+C (copy) を送るコマンドを返す。

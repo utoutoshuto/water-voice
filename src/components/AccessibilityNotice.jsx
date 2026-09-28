@@ -22,13 +22,25 @@ export default function AccessibilityNotice({ enabled }) {
         自動貼り付けにはアクセシビリティ権限が必要です。許可されるまで、テキストはクリップボードに保存されます。
         システム設定 &gt; プライバシーとセキュリティ &gt; アクセシビリティ で Water Voice を許可してください。
       </div>
-      <button
-        className="btn btn-ghost"
-        onClick={() => window.electronAPI.openAccessibilitySettings()}
-        style={{ marginTop: 10, fontSize: 13 }}
-      >
-        システム設定を開く
-      </button>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <button
+          className="btn btn-ghost"
+          onClick={() => window.electronAPI.openAccessibilitySettings()}
+          style={{ fontSize: 13 }}
+        >
+          システム設定を開く
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => window.electronAPI.resetAccessibilityPermission()}
+          style={{ fontSize: 13 }}
+        >
+          許可をリセットして再設定
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+        ON にしているのに動かない場合は、アップデート前の許可が残っています。「許可をリセットして再設定」を押し、一覧に出た Water Voice を ON にしてください。
+      </div>
     </div>
   );
 }

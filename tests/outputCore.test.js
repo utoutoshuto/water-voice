@@ -15,8 +15,8 @@ const {
 } = require('../src/shared/outputCore');
 const { normalizeSettings } = require('../src/shared/waterVoiceCore');
 
-test('getFrontmostAppCommand uses osascript only on macOS', () => {
-  assert.equal(getFrontmostAppCommand('darwin').command, 'osascript');
+test('getFrontmostAppCommand uses lsappinfo only on macOS', () => {
+  assert.match(getFrontmostAppCommand('darwin').args[1], /lsappinfo front/);
   assert.equal(getFrontmostAppCommand('win32'), null);
   assert.equal(getFrontmostAppCommand('linux'), null);
 });
@@ -26,6 +26,11 @@ test('parseFrontmostApp parses pid and name and detects self', () => {
   assert.deepEqual(parseFrontmostApp('99\tWater Voice', 99), { pid: 99, name: 'Water Voice', isSelf: true });
   assert.equal(parseFrontmostApp('', 99), null);
   assert.equal(parseFrontmostApp('abc\tFoo', 99), null);
+  assert.deepEqual(
+    parseFrontmostApp('"pid"=4321\n"LSDisplayName"="Slack"\n', 99),
+    { pid: 4321, name: 'Slack', isSelf: false }
+  );
+  assert.deepEqual(parseFrontmostApp('"pid"=99', 99), { pid: 99, name: '', isSelf: true });
 });
 
 test('buildKeystrokeCommand sends Cmd+V/C on macOS and reactivates the target app', () => {
