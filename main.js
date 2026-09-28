@@ -24,6 +24,7 @@ const {
   RECORDING_EVENT,
   nextRecordingPhase,
 } = require('./src/shared/recorderCore');
+const { generateHistoryId } = require('./src/shared/historyUtils');
 
 const APP_NAME = 'Water Voice';
 const APP_DATA_DIR = app.getPath('appData');
@@ -401,7 +402,7 @@ function addToHistory(entry) {
 
   const history = Array.isArray(store.get('history')) ? store.get('history') : [];
   history.unshift({
-    id: Date.now(),
+    id: generateHistoryId(),
     timestamp: new Date().toISOString(),
     processed,
     ...(raw && raw !== processed ? { raw } : {}),
@@ -528,6 +529,38 @@ ipcMain.handle('get-history', () => {
 ipcMain.handle('clear-history', () => {
   store.set('history', []);
   return { success: true };
+});
+
+ipcMain.handle('delete-history-entry', (event, id) => {
+  try {
+    const history = Array.isArray(store.get('history')) ? store.get('history') : [];
+    const updated = history.filter((item) => String(item.id) !== String(id));
+    store.set('history', updated);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('update-history-entry', (event, payload = {}) => {
+  try {
+    const { id, text } = payload;
+    const updatedText = typeof text === 'string' ? text.trim() : '';
+    const history = Array.isArray(store.get('history')) ? store.get('history') : [];
+    const updated = history.map((item) => {
+      if (String(item.id) === String(id)) {
+        return {
+          ...item,
+          processed: updatedText,
+        };
+      }
+      return item;
+    });
+    store.set('history', updated);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
