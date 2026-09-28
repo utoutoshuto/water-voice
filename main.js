@@ -1015,7 +1015,7 @@ async function processFileWithGemini(filePath, options = {}, externalSignal = nu
   const fileSize = stat.size;
   const mimeType = getMimeTypeFromExtension(filePath);
 
-  const apiKey = store.get('apiKey');
+  const apiKey = getStoredApiKey();
   if (!apiKey) {
     throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
       errorCode: 'GEMINI_API_KEY_MISSING',
@@ -1055,6 +1055,17 @@ async function processFileWithGemini(filePath, options = {}, externalSignal = nu
         mimeType,
         config: { mimeType },
       });
+      // 動画など大きいファイルはサーバー側の処理完了(ACTIVE)まで待ってから参照する
+      const uploadDeadline = Date.now() + 180000;
+      while (uploadResult.state === 'PROCESSING') {
+        if (externalSignal?.aborted) throw new Error('文字起こし処理がキャンセルされました。');
+        if (Date.now() > uploadDeadline) throw new Error('アップロードしたファイルの処理がタイムアウトしました。');
+        await delay(2000);
+        uploadResult = await ai.files.get({ name: uploadResult.name });
+      }
+      if (uploadResult.state === 'FAILED') {
+        throw new Error('アップロードしたファイルをGeminiが処理できませんでした。');
+      }
       const fileUri = uploadResult.uri;
       contents = [{ fileData: { fileUri, mimeType: uploadResult.mimeType || mimeType } }];
     }
@@ -1123,7 +1134,7 @@ async function processFileWithGemini(filePath, options = {}, externalSignal = nu
     if (uploadResult && uploadResult.name) {
       try {
         await ai.files.delete({ name: uploadResult.name });
-      } catch (e) {
+      } catch {
         // cleanup ignore
       }
     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const SUPPORTED_EXTENSIONS = ['.mp3', '.m4a', '.wav', '.webm', '.ogg', '.aac', '.flac', '.mp4', '.mov', '.mkv', '.avi'];
 
