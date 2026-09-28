@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import AccessibilityNotice from '../components/AccessibilityNotice';
 
 const LANGUAGES = [
   { value: 'auto', label: '自動判別（多言語混在可）' },
@@ -79,7 +80,7 @@ function HotkeyRecorder({ value, onChange }) {
         minWidth: 180,
         textAlign: 'center',
       }}>
-        {value}
+        {value || '未設定'}
       </kbd>
       {recording ? (
         <input
@@ -244,6 +245,54 @@ export default function Settings() {
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
             変更後は保存が必要です。登録できない場合は他のアプリと競合しています。
           </p>
+        </div>
+        <div className="form-group">
+          <label className="form-label">コマンドモード開始/停止キー</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <HotkeyRecorder value={settings.commandHotkey} onChange={(value) => update('commandHotkey', value)} />
+            {settings.commandHotkey && (
+              <button className="btn btn-ghost" onClick={() => update('commandHotkey', '')} style={{ fontSize: 13 }}>
+                無効にする
+              </button>
+            )}
+          </div>
+          <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+            選択中のテキストに「もっと簡潔に」「英訳して」などの音声指示を適用し、結果で置き換えます。選択がなければ指示どおりに新しく作成します。
+          </p>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">出力</div>
+        <AccessibilityNotice enabled={settings.autoPaste} />
+        <div className="toggle-row">
+          <div>
+            <div className="toggle-label">前面のアプリに自動で貼り付け</div>
+            <div className="toggle-desc">録音開始時に前面にあったアプリへ貼り付ける。オフの場合はクリップボードに保存して完了音を鳴らす</div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.autoPaste}
+              onChange={(e) => update('autoPaste', e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+        <div className="toggle-row">
+          <div>
+            <div className="toggle-label">貼り付け後にクリップボードを復元</div>
+            <div className="toggle-desc">貼り付けに使ったクリップボードを、少し待ってから元の内容に戻す</div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.restoreClipboard}
+              disabled={!settings.autoPaste}
+              onChange={(e) => update('restoreClipboard', e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
         </div>
       </div>
 

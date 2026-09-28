@@ -17,6 +17,9 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'customInstructions',
   'outputLanguage',
   'snippets',
+  'autoPaste',
+  'restoreClipboard',
+  'commandHotkey',
 ]);
 
 function normalizeDictionary(value) {
@@ -77,11 +80,11 @@ function normalizeSettings(settings = {}) {
   for (const [key, value] of Object.entries(settings)) {
     if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
 
-    if (key === 'apiKey' || key === 'hotkey' || key === 'language' || key === 'microphoneDeviceId') {
+    if (key === 'apiKey' || key === 'hotkey' || key === 'language' || key === 'microphoneDeviceId' || key === 'commandHotkey') {
       normalized[key] = typeof value === 'string' ? value.trim() : '';
     } else if (key === 'model') {
       normalized[key] = GEMINI_MODELS.includes(value) ? value : DEFAULT_GEMINI_MODEL;
-    } else if (key === 'removeFillers') {
+    } else if (key === 'removeFillers' || key === 'autoPaste' || key === 'restoreClipboard') {
       normalized[key] = Boolean(value);
     } else if (key === 'customDictionary') {
       normalized[key] = normalizeDictionary(value);
