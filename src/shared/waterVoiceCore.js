@@ -206,6 +206,95 @@ function validateAudioPayload(audioBase64, mimeType) {
   }
 }
 
+function getMimeTypeFromExtension(filePath) {
+  if (typeof filePath !== 'string') return 'audio/mp3';
+  const lastDot = filePath.lastIndexOf('.');
+  if (lastDot === -1) return 'audio/mp3';
+  const ext = filePath.slice(lastDot).toLowerCase();
+  const mimeTypes = {
+    '.mp3': 'audio/mp3',
+    '.m4a': 'audio/m4a',
+    '.wav': 'audio/wav',
+    '.webm': 'audio/webm',
+    '.ogg': 'audio/ogg',
+    '.aac': 'audio/aac',
+    '.flac': 'audio/flac',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo',
+  };
+  return mimeTypes[ext] || 'audio/mp3';
+}
+
+function buildFileTranscribeInstruction({
+  mode = 'full',
+  language = 'ja-JP',
+  removeFillers = true,
+  dictionary = [],
+  customInstructions = '',
+  outputLanguage = 'same',
+  snippets = [],
+} = {}) {
+  const inputLanguageInstruction = language === 'auto'
+    ? '音声の言語は自動判別してください。多言語が混在している場合も、そのまま正確に扱ってください。'
+    : `音声の言語は「${language}」です。その言語として自然な文章に整形してください。`;
+
+  const outputLanguageInstruction = outputLanguage === 'same'
+    ? '話された言語のまま出力する'
+    : `出力は「${outputLanguage}」に翻訳する`;
+
+  let modeInstruction = '';
+  if (mode === 'summary') {
+    modeInstruction = `処理モード: 【要約（箇条書き）】
+ルール:
+1. 音声の内容を正確に理解し、主要なポイント・要点を箇条書きで分かりやすく整理して要約してください。
+2. ${removeFillers ? 'えー、あー、えっと などのフィラーワードや冗長な表現は除去してください。' : '話された発言のニュアンスを残して整理してください。'}
+3. ${outputLanguageInstruction}
+4. 簡潔かつ明確な箇条書き形式で出力してください。説明文、前置き、補足は不要です。`;
+  } else if (mode === 'minutes') {
+    modeInstruction = `処理モード: 【議事録】
+ルール:
+1. 音声の内容（会議や会話）から、重要事項を整理した議事録を作成してください。
+2. 以下のフォーマットに従って出力してください:
+   ■ 概要・目的
+   ■ 主な議論内容
+   ■ 決定事項
+   ■ TODO・次のアクション
+3. ${removeFillers ? 'フィラーワードは除去してください。' : '発言内容のニュアンスを正確に保持してください。'}
+4. ${outputLanguageInstruction}
+5. 議事録の文章のみを出力してください。説明文、前置き、補足は不要です。`;
+  } else {
+    modeInstruction = `処理モード: 【整形した全文】
+ルール:
+1. 音声の内容を正確に文字起こしし、意味を変えずに自然な文章に整形してください。
+2. ${removeFillers ? 'えー、あー、えっと、うーん などのフィラーワードを除去する' : 'フィラーワードはそのまま保持する'}
+3. 句読点を適切に追加する。話し言葉らしい自然なトーンを保つ
+4. 段落区切りが自然な位置にあれば改行を入れる
+5. ${outputLanguageInstruction}
+6. 整形したテキストのみを返す。説明文、前置き、補足は不要`;
+  }
+
+  let instruction = `あなたは音声・動画ファイルの文字起こしおよびテキスト整形アシスタントです。
+${inputLanguageInstruction}
+
+${modeInstruction}`;
+
+  if (Array.isArray(dictionary) && dictionary.length > 0) {
+    instruction += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
+  }
+
+  if (Array.isArray(snippets) && snippets.length > 0) {
+    instruction += `\n\nスニペット: 音声中でトリガー語が話された場合、対応する本文に展開してください。\n${snippets.map(({ trigger, text }) => `- ${trigger}: ${text}`).join('\n')}`;
+  }
+
+  if (customInstructions) {
+    instruction += `\n\n追加指示:\n${customInstructions}`;
+  }
+
+  return instruction;
+}
+
 module.exports = {
   MAX_HISTORY,
   MAX_DICTIONARY_WORDS,
@@ -227,4 +316,7 @@ module.exports = {
   classifyGeminiError,
   shouldFallbackGeminiError,
   validateAudioPayload,
+  getMimeTypeFromExtension,
+  buildFileTranscribeInstruction,
 };
+

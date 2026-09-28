@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Home from './pages/Home';
+import FileTranscribe from './pages/FileTranscribe';
 import Settings from './pages/Settings';
 import History from './pages/History';
 import Dictionary from './pages/Dictionary';
@@ -9,6 +10,7 @@ import './styles/global.css';
 
 const NAV_ITEMS = [
   { id: 'home', label: 'ホーム' },
+  { id: 'file', label: 'ファイル' },
   { id: 'settings', label: '設定' },
   { id: 'history', label: '履歴' },
   { id: 'dictionary', label: '辞書' },
@@ -53,6 +55,7 @@ export default function App() {
         </nav>
         <main className="content">
           {page === 'home' && <Home />}
+          {page === 'file' && <FileTranscribe />}
           {page === 'settings' && <Settings />}
           {page === 'history' && <History />}
           {page === 'dictionary' && <Dictionary />}

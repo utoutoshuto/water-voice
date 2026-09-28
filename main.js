@@ -18,6 +18,8 @@ const {
   classifyGeminiError,
   shouldFallbackGeminiError,
   validateAudioPayload,
+  getMimeTypeFromExtension,
+  buildFileTranscribeInstruction,
 } = require('./src/shared/waterVoiceCore');
 const {
   RECORDING_PHASE,
@@ -659,6 +661,213 @@ ipcMain.handle('set-login-item', (event, enabled) => {
 ipcMain.handle('check-mic-permission', async () => {
   if (process.platform !== 'darwin') return 'granted';
   return systemPreferences.getMediaAccessStatus('microphone');
+});
+
+let activeFileTranscriptionController = null;
+const FILE_SIZE_INLINE_LIMIT = 20 * 1024 * 1024; // 20MB
+
+async function processFileWithGemini(filePath, options = {}, externalSignal = null) {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) {
+    throw new Error('指定されたファイルが存在しないか、不正なパスです。');
+  }
+
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const mimeType = getMimeTypeFromExtension(filePath);
+
+  const apiKey = store.get('apiKey');
+  if (!apiKey) {
+    throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
+      errorCode: 'GEMINI_API_KEY_MISSING',
+    });
+  }
+
+  const dictionary = normalizeDictionary(store.get('customDictionary'));
+  const snippets = normalizeSnippets(store.get('snippets'));
+  const removeFillers = options?.removeFillers ?? store.get('removeFillers', true);
+  const language = options?.language ?? store.get('language', 'ja-JP');
+  const customInstructions = store.get('customInstructions', '');
+  const outputLanguage = store.get('outputLanguage', 'same');
+  const mode = options?.mode || 'full';
+
+  const systemInstruction = buildFileTranscribeInstruction({
+    mode,
+    language,
+    removeFillers,
+    dictionary,
+    customInstructions,
+    outputLanguage,
+    snippets,
+  });
+
+  const ai = new GoogleGenAI({ apiKey });
+  let uploadResult = null;
+  let contents = null;
+
+  try {
+    if (fileSize < FILE_SIZE_INLINE_LIMIT) {
+      const fileBuffer = fs.readFileSync(filePath);
+      const audioBase64 = fileBuffer.toString('base64');
+      contents = [{ inlineData: { data: audioBase64, mimeType } }];
+    } else {
+      uploadResult = await ai.files.upload({
+        file: filePath,
+        mimeType,
+        config: { mimeType },
+      });
+      const fileUri = uploadResult.uri;
+      contents = [{ fileData: { fileUri, mimeType: uploadResult.mimeType || mimeType } }];
+    }
+
+    let lastError = null;
+
+    for (const modelName of getGeminiModelOrder(store.get('model', DEFAULT_GEMINI_MODEL))) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (externalSignal?.aborted) {
+          throw new Error('文字起こし処理がキャンセルされました。');
+        }
+        try {
+          const result = await withTimeout(async (abortSignal) => {
+            const onAbort = () => abortSignal.abort();
+            if (externalSignal) {
+              externalSignal.addEventListener('abort', onAbort, { once: true });
+            }
+            try {
+              return await ai.models.generateContent({
+                model: modelName,
+                contents,
+                config: {
+                  systemInstruction,
+                  thinkingConfig: getThinkingConfig(modelName),
+                  abortSignal,
+                },
+              });
+            } finally {
+              if (externalSignal) {
+                externalSignal.removeEventListener('abort', onAbort);
+              }
+            }
+          }, 180000);
+
+          const text = result.text?.trim();
+          if (!text) {
+            throw new Error('Gemini APIから空の結果が返りました。');
+          }
+
+          addToHistory({
+            raw: text,
+            processed: text,
+            source: 'file',
+            fileName: path.basename(filePath),
+          });
+
+          return text;
+        } catch (error) {
+          lastError = error;
+          if (externalSignal?.aborted || error.name === 'AbortError' || error.message?.includes('キャンセル')) {
+            throw new Error('文字起こし処理がキャンセルされました。');
+          }
+          const status = getErrorStatus(error);
+          if (!RETRYABLE_STATUS_CODES.has(status) || attempt === 1) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+        }
+      }
+      if (!shouldFallbackGeminiError(lastError)) break;
+    }
+
+    const classified = classifyGeminiError(lastError);
+    throw Object.assign(new Error(classified.error), { errorCode: classified.errorCode });
+  } finally {
+    if (uploadResult && uploadResult.name) {
+      try {
+        await ai.files.delete({ name: uploadResult.name });
+      } catch (e) {
+        // cleanup ignore
+      }
+    }
+  }
+}
+
+ipcMain.handle('select-audio-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      {
+        name: '音声・動画ファイル',
+        extensions: ['mp3', 'm4a', 'wav', 'webm', 'ogg', 'aac', 'flac', 'mp4', 'mov', 'mkv', 'avi'],
+      },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+    return { canceled: true, filePath: null, fileName: null, fileSize: 0 };
+  }
+
+  const filePath = result.filePaths[0];
+  const stat = fs.statSync(filePath);
+  return {
+    canceled: false,
+    filePath,
+    fileName: path.basename(filePath),
+    fileSize: stat.size,
+  };
+});
+
+ipcMain.handle('transcribe-file', async (event, payload = {}) => {
+  try {
+    if (activeFileTranscriptionController) {
+      activeFileTranscriptionController.abort();
+    }
+    activeFileTranscriptionController = new AbortController();
+    const text = await processFileWithGemini(
+      payload.filePath,
+      payload.options,
+      activeFileTranscriptionController.signal
+    );
+    activeFileTranscriptionController = null;
+    return { success: true, text };
+  } catch (error) {
+    activeFileTranscriptionController = null;
+    return {
+      success: false,
+      error: error.message,
+      errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+    };
+  }
+});
+
+ipcMain.handle('cancel-file-transcription', () => {
+  if (activeFileTranscriptionController) {
+    activeFileTranscriptionController.abort();
+    activeFileTranscriptionController = null;
+  }
+  return { success: true };
+});
+
+ipcMain.handle('save-text-file', async (event, payload = {}) => {
+  try {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const defaultFileName = typeof payload.defaultFileName === 'string' && payload.defaultFileName
+      ? payload.defaultFileName
+      : 'transcription.txt';
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'テキストファイルとして保存',
+      defaultPath: defaultFileName,
+      filters: [{ name: 'テキストファイル', extensions: ['txt'] }],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    fs.writeFileSync(result.filePath, text, 'utf8');
+    return { success: true, filePath: result.filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 app.whenReady().then(async () => {
