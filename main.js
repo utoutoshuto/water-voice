@@ -693,6 +693,10 @@ function ensureFailedRecordingsDir() {
 }
 
 function failedRecordingPaths(id) {
+  // renderer から渡る id をパスに使うため、saveFailedRecording が生成する形式以外は拒否する
+  if (typeof id !== 'string' || !/^\d+-[a-z0-9]+$/.test(id)) {
+    throw new Error('録音データのIDが不正です。');
+  }
   return {
     audioPath: path.join(FAILED_RECORDINGS_DIR, `${id}.audio`),
     metaPath: path.join(FAILED_RECORDINGS_DIR, `${id}.json`),
@@ -845,6 +849,9 @@ ipcMain.handle('update-history-entry', (event, payload = {}) => {
   try {
     const { id, text } = payload;
     const updatedText = typeof text === 'string' ? text.trim() : '';
+    if (!updatedText) {
+      return { success: false, error: '内容を空にして保存することはできません。' };
+    }
     const history = Array.isArray(store.get('history')) ? store.get('history') : [];
     const updated = history.map((item) => {
       if (String(item.id) === String(id)) {
