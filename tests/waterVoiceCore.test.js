@@ -24,6 +24,7 @@ test('normalizeSettings only accepts known keys and normalizes types', () => {
     language: ' ja-JP ',
     removeFillers: 0,
     customDictionary: [' Foo ', 'Foo', 'Bar'],
+    microphoneDeviceId: ' mic-1 ',
     legacyOption: 1,
     unknown: 'ignored',
   });
@@ -34,6 +35,7 @@ test('normalizeSettings only accepts known keys and normalizes types', () => {
     language: 'ja-JP',
     removeFillers: false,
     customDictionary: ['Foo', 'Bar'],
+    microphoneDeviceId: 'mic-1',
   });
 });
 

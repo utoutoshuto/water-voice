@@ -24,7 +24,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getActiveApp: () => ipcRenderer.invoke('get-active-app'),
 
   // Recording control
+  // ユーザー起点のキャンセル (Esc / オーバーレイクリック)
   cancelRecording: () => ipcRenderer.invoke('cancel-recording'),
+  // ホットキーと同じ経路で録音開始/停止する
+  toggleRecording: () => ipcRenderer.invoke('toggle-recording'),
+  // renderer 側の処理終了通知。オーバーレイを閉じて idle に戻す
+  finishRecordingSession: () => ipcRenderer.invoke('finish-recording-session'),
+  getRecordingPhase: () => ipcRenderer.invoke('get-recording-phase'),
 
   // Failed recording recovery (文字起こし失敗時の録音データ保全)
   saveFailedRecording: (audioBase64, mimeType, options) =>

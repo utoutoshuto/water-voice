@@ -15,6 +15,11 @@ const {
   classifyGeminiError,
   validateAudioPayload,
 } = require('./src/shared/waterVoiceCore');
+const {
+  RECORDING_PHASE,
+  RECORDING_EVENT,
+  nextRecordingPhase,
+} = require('./src/shared/recorderCore');
 
 const APP_NAME = 'Water Voice';
 const APP_DATA_DIR = app.getPath('appData');
@@ -32,6 +37,7 @@ const store = new Store({
     language: 'ja-JP',
     removeFillers: true,
     customDictionary: [],
+    microphoneDeviceId: '',
     history: [],
   },
 });
@@ -39,7 +45,9 @@ const store = new Store({
 let mainWindow = null;
 let overlayWindow = null;
 let tray = null;
-let isRecording = false;
+let recordingPhase = RECORDING_PHASE.IDLE;
+let registeredHotkey = null;
+let isEscapeRegistered = false;
 let isQuitting = false;
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -56,8 +64,8 @@ function runCommand(command, args) {
   });
 }
 
-function sendRecordingState(nextIsRecording) {
-  const payload = { isRecording: nextIsRecording };
+function sendRecordingState(phase) {
+  const payload = { phase, isRecording: phase === RECORDING_PHASE.RECORDING };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('recording-state', payload);
   }
@@ -66,22 +74,52 @@ function sendRecordingState(nextIsRecording) {
   }
 }
 
-function stopRecordingState({ hideOverlay = true } = {}) {
-  isRecording = false;
-  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.hide();
-  }
-  sendRecordingState(false);
+// 録音中だけ Esc をグローバルに奪い、どのアプリからでもキャンセルできるようにする
+function registerEscapeShortcut() {
+  if (isEscapeRegistered) return;
+  isEscapeRegistered = globalShortcut.register('Escape', () => {
+    dispatchRecordingEvent(RECORDING_EVENT.CANCEL);
+  });
 }
 
-function cancelRecordingState({ hideOverlay = true } = {}) {
-  isRecording = false;
-  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
+function unregisterEscapeShortcut() {
+  if (!isEscapeRegistered) return;
+  globalShortcut.unregister('Escape');
+  isEscapeRegistered = false;
+}
+
+// 録音状態 (idle | recording | processing) は main が唯一の正とし、
+// オーバーレイ表示・Esc 登録・renderer への通知はすべてこの遷移に従う。
+function dispatchRecordingEvent(event) {
+  const prevPhase = recordingPhase;
+  const nextPhase = nextRecordingPhase(prevPhase, event);
+  if (nextPhase === prevPhase) return prevPhase;
+
+  recordingPhase = nextPhase;
+
+  if (nextPhase === RECORDING_PHASE.RECORDING) {
+    positionOverlayNearCursor();
+    overlayWindow?.showInactive();
+    registerEscapeShortcut();
+  } else {
+    unregisterEscapeShortcut();
+  }
+
+  if (nextPhase === RECORDING_PHASE.IDLE && overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.hide();
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
+
+  if (event === RECORDING_EVENT.CANCEL && mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('recording-cancelled');
   }
+
+  sendRecordingState(nextPhase);
+  return nextPhase;
+}
+
+// 整形結果の保存時に呼ばれる。整形中のときだけ idle に戻す。
+function stopRecordingState() {
+  dispatchRecordingEvent(RECORDING_EVENT.PROCESSING_DONE);
 }
 
 function positionOverlayNearCursor() {
@@ -117,6 +155,10 @@ function createMainWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
+
+  // 録音ロジックを持つ renderer が再読み込み・クラッシュした場合、録音状態が戻らなくならないよう idle に戻す
+  mainWindow.webContents.on('did-finish-load', () => dispatchRecordingEvent(RECORDING_EVENT.FINISH));
+  mainWindow.webContents.on('render-process-gone', () => dispatchRecordingEvent(RECORDING_EVENT.FINISH));
 
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
@@ -194,17 +236,28 @@ function refreshTray() {
 }
 
 function registerHotkey(hotkey) {
-  globalShortcut.unregisterAll();
+  // Esc など他のショートカットを消さないよう、自分が登録したホットキーだけ解除する
+  if (registeredHotkey) {
+    globalShortcut.unregister(registeredHotkey);
+    registeredHotkey = null;
+  }
 
   if (!hotkey || typeof hotkey !== 'string') {
     return false;
   }
 
-  const success = globalShortcut.register(hotkey, () => {
-    toggleRecording();
-  });
+  let success = false;
+  try {
+    success = globalShortcut.register(hotkey, () => {
+      toggleRecording();
+    });
+  } catch (error) {
+    console.error('Hotkey registration error:', error);
+  }
 
-  if (!success) {
+  if (success) {
+    registeredHotkey = hotkey;
+  } else {
     console.error('Hotkey registration failed:', hotkey);
   }
 
@@ -212,15 +265,7 @@ function registerHotkey(hotkey) {
 }
 
 function toggleRecording() {
-  isRecording = !isRecording;
-
-  if (isRecording) {
-    positionOverlayNearCursor();
-    overlayWindow?.showInactive();
-    sendRecordingState(true);
-  } else {
-    sendRecordingState(false);
-  }
+  return dispatchRecordingEvent(RECORDING_EVENT.TOGGLE);
 }
 
 function saveGeneratedText(text) {
@@ -236,6 +281,7 @@ function getPublicSettings() {
     language: store.get('language'),
     removeFillers: store.get('removeFillers'),
     customDictionary: normalizeDictionary(store.get('customDictionary')),
+    microphoneDeviceId: store.get('microphoneDeviceId', ''),
   };
 }
 
@@ -507,10 +553,24 @@ ipcMain.handle('save-generated-text', async (event, payload = {}) => {
 
 ipcMain.handle('get-active-app', async () => 'Unknown');
 
+// ユーザー起点のキャンセル (オーバーレイクリック等)。録音中のみ有効。
 ipcMain.handle('cancel-recording', () => {
-  cancelRecordingState({ hideOverlay: true });
+  dispatchRecordingEvent(RECORDING_EVENT.CANCEL);
   return { success: true };
 });
+
+// ホーム画面の録音ボタン。ホットキーと同じ経路で状態遷移させる。
+ipcMain.handle('toggle-recording', () => {
+  return { success: true, phase: toggleRecording() };
+});
+
+// renderer 側の処理終了通知 (成功・失敗・録音が短すぎ・開始失敗)。オーバーレイを閉じて idle に戻す。
+ipcMain.handle('finish-recording-session', () => {
+  dispatchRecordingEvent(RECORDING_EVENT.FINISH);
+  return { success: true };
+});
+
+ipcMain.handle('get-recording-phase', () => recordingPhase);
 
 ipcMain.handle('save-failed-recording', (event, payload = {}) => {
   try {

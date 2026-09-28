@@ -101,6 +101,41 @@ function HotkeyRecorder({ value, onChange }) {
   );
 }
 
+// マイク選択。'' はシステム既定。選択デバイスが見つからない場合は録音時に既定へフォールバックする。
+function MicrophoneSelect({ value, onChange }) {
+  const [devices, setDevices] = useState([]);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.enumerateDevices) return undefined;
+
+    const load = () => {
+      mediaDevices.enumerateDevices()
+        .then((list) => setDevices(list.filter((device) => device.kind === 'audioinput' && device.deviceId)))
+        .catch(() => setDevices([]));
+    };
+
+    load();
+    mediaDevices.addEventListener?.('devicechange', load);
+    return () => mediaDevices.removeEventListener?.('devicechange', load);
+  }, []);
+
+  const selectable = devices.filter((device) => device.deviceId !== 'default');
+  const missing = value && !selectable.some((device) => device.deviceId === value);
+
+  return (
+    <select className="form-select" value={value || ''} onChange={(e) => onChange(e.target.value)}>
+      <option value="">システム既定</option>
+      {selectable.map((device, index) => (
+        <option key={device.deviceId} value={device.deviceId}>
+          {device.label || `マイク ${index + 1}`}
+        </option>
+      ))}
+      {missing && <option value={value}>(接続されていないマイク) システム既定を使用</option>}
+    </select>
+  );
+}
+
 export default function Settings() {
   const [settings, setSettings] = useState(null);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -218,6 +253,20 @@ export default function Settings() {
               <option key={lang.value} value={lang.value}>{lang.label}</option>
             ))}
           </select>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">マイク</div>
+        <div className="form-group">
+          <label className="form-label">入力デバイス</label>
+          <MicrophoneSelect
+            value={settings.microphoneDeviceId}
+            onChange={(value) => update('microphoneDeviceId', value)}
+          />
+          <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+            選択したマイクが見つからない場合はシステム既定のマイクで録音します。
+          </p>
         </div>
       </div>
 

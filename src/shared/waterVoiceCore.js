@@ -9,6 +9,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'language',
   'removeFillers',
   'customDictionary',
+  'microphoneDeviceId',
 ]);
 
 function normalizeDictionary(value) {
@@ -35,7 +36,7 @@ function normalizeSettings(settings = {}) {
   for (const [key, value] of Object.entries(settings)) {
     if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
 
-    if (key === 'apiKey' || key === 'hotkey' || key === 'language') {
+    if (key === 'apiKey' || key === 'hotkey' || key === 'language' || key === 'microphoneDeviceId') {
       normalized[key] = typeof value === 'string' ? value.trim() : '';
     } else if (key === 'removeFillers') {
       normalized[key] = Boolean(value);
