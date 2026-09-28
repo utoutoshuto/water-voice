@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 const LANGUAGES = [
+  { value: 'auto', label: '自動判別（多言語混在可）' },
   { value: 'ja-JP', label: '日本語' },
   { value: 'en-US', label: 'English (US)' },
   { value: 'en-GB', label: 'English (UK)' },
@@ -10,6 +11,12 @@ const LANGUAGES = [
   { value: 'fr-FR', label: 'Francais' },
   { value: 'de-DE', label: 'Deutsch' },
   { value: 'es-ES', label: 'Espanol' },
+];
+
+const MODELS = [
+  { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite' },
+  { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ];
 
 const KEY_MAP = {
@@ -177,7 +184,7 @@ export default function Settings() {
     setApiKeyTestMsg('');
     setIsTestingApiKey(true);
 
-    const result = await window.electronAPI.testGeminiApiKey(settings.apiKey);
+    const result = await window.electronAPI.testGeminiApiKey(settings.apiKey, settings.model);
     setIsTestingApiKey(false);
 
     if (result.success) {
@@ -243,6 +250,21 @@ export default function Settings() {
       <div className="card">
         <div className="card-title">音声認識</div>
         <div className="form-group">
+          <label className="form-label">Geminiモデル</label>
+          <select
+            className="form-select"
+            value={settings.model}
+            onChange={(e) => update('model', e.target.value)}
+          >
+            {MODELS.map((model) => (
+              <option key={model.value} value={model.value}>{model.label}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+            利用できない場合は他のモデルに自動で切り替えます。
+          </p>
+        </div>
+        <div className="form-group">
           <label className="form-label">言語</label>
           <select
             className="form-select"
@@ -253,6 +275,34 @@ export default function Settings() {
               <option key={lang.value} value={lang.value}>{lang.label}</option>
             ))}
           </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">出力言語</label>
+          <select
+            className="form-select"
+            value={settings.outputLanguage}
+            onChange={(e) => update('outputLanguage', e.target.value)}
+          >
+            <option value="same">話した言語のまま</option>
+            {LANGUAGES.filter((lang) => lang.value !== 'auto').map((lang) => (
+              <option key={lang.value} value={lang.value}>{lang.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">追加指示</label>
+          <textarea
+            className="form-input"
+            rows={5}
+            maxLength={2000}
+            placeholder="例: 丁寧語で整形する。箇条書きは維持する。"
+            value={settings.customInstructions}
+            onChange={(e) => update('customInstructions', e.target.value)}
+            style={{ resize: 'vertical' }}
+          />
+          <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+            {(settings.customInstructions || '').length}/2000文字
+          </p>
         </div>
       </div>
 
