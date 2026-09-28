@@ -50,6 +50,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Check if this window is the overlay
   isOverlay: () => ipcRenderer.invoke('is-overlay'),
 
+  // File transcription
+  selectAudioFile: () => ipcRenderer.invoke('select-audio-file'),
+  transcribeFile: (filePath, options) => ipcRenderer.invoke('transcribe-file', { filePath, options }),
+  cancelFileTranscription: () => ipcRenderer.invoke('cancel-file-transcription'),
+  saveTextFile: (text, defaultFileName) => ipcRenderer.invoke('save-text-file', { text, defaultFileName }),
+
   // Events from main process
   onRecordingState: (callback) => {
     const listener = (event, data) => callback(data);
@@ -68,3 +74,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('recording-cancelled');
   },
 });
+

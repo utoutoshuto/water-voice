@@ -152,3 +152,30 @@ test('getThinkingConfig uses thinkingLevel for Gemini 3 and thinkingBudget for 2
   assert.deepEqual(getThinkingConfig('gemini-3.6-flash'), { thinkingLevel: 'MINIMAL' });
   assert.deepEqual(getThinkingConfig('gemini-2.5-flash'), { thinkingBudget: 0 });
 });
+
+test('getMimeTypeFromExtension identifies common audio and video formats', () => {
+  const { getMimeTypeFromExtension } = require('../src/shared/waterVoiceCore');
+  assert.equal(getMimeTypeFromExtension('test.mp3'), 'audio/mp3');
+  assert.equal(getMimeTypeFromExtension('sample.m4a'), 'audio/m4a');
+  assert.equal(getMimeTypeFromExtension('recording.wav'), 'audio/wav');
+  assert.equal(getMimeTypeFromExtension('video.mp4'), 'video/mp4');
+  assert.equal(getMimeTypeFromExtension('unknown.xyz'), 'audio/mp3');
+});
+
+test('buildFileTranscribeInstruction generates instructions for full, summary, and minutes modes', () => {
+  const { buildFileTranscribeInstruction } = require('../src/shared/waterVoiceCore');
+
+  const fullInstruction = buildFileTranscribeInstruction({ mode: 'full', dictionary: ['Water Voice'] });
+  assert.match(fullInstruction, /整形した全文/);
+  assert.match(fullInstruction, /Water Voice/);
+
+  const summaryInstruction = buildFileTranscribeInstruction({ mode: 'summary', removeFillers: true });
+  assert.match(summaryInstruction, /要約（箇条書き）/);
+  assert.match(summaryInstruction, /フィラーワードや冗長な表現は除去/);
+
+  const minutesInstruction = buildFileTranscribeInstruction({ mode: 'minutes', customInstructions: 'フォーマット厳守' });
+  assert.match(minutesInstruction, /議事録/);
+  assert.match(minutesInstruction, /■ 決定事項/);
+  assert.match(minutesInstruction, /フォーマット厳守/);
+});
+
