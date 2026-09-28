@@ -9,7 +9,7 @@
     "build": "webpack --mode production",
     "dist": "npm run build && electron-builder --config electron-builder.config.js",
     "pack": "npm run dist",
-    "test": "node --test tests/*.test.js",
+    "test": "node --test tests/",
     "lint": "eslint ."
   },
   "engines": {

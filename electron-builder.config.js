@@ -29,7 +29,7 @@ module.exports = {
     deleteAppDataOnUninstall: false,
     include: 'build/installer.nsh',
   },
-  // タグ push 時に GitHub Releases へ公開する(.github/workflows/release.yml)
+  // 自動更新用の公開先情報。Release 作成自体は .github/workflows/release.yml が行う
   publish: {
     provider: 'github',
     owner: 'utoutoshuto',
