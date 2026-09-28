@@ -152,8 +152,8 @@ if (!singleInstanceLock) {
 
 function runCommand(command, args) {
   return new Promise((resolve) => {
-    execFile(command, args, { windowsHide: true }, (err, stdout) => {
-      resolve({ ok: !err, stdout: stdout ? stdout.trim() : '' });
+    execFile(command, args, { windowsHide: true }, (err, stdout, stderr) => {
+      resolve({ ok: !err, stdout: stdout ? stdout.trim() : '', stderr: stderr ? String(stderr).trim() : '' });
     });
   });
 }
@@ -426,41 +426,42 @@ async function captureFrontmostApp() {
     return { pid: null, name: '', isSelf: focusedSelf };
   }
 
-  const { ok, stdout } = await runCommand(command.command, command.args);
+  const { ok, stdout, stderr } = await runCommand(command.command, command.args);
   const app = ok ? parseFrontmostApp(stdout, process.pid) : null;
+  logOutput(`frontmost ok=${ok} app=${JSON.stringify(app)} focusedSelf=${focusedSelf}${stderr ? ` stderr=${stderr}` : ''}`);
   if (!app) return focusedSelf ? { pid: null, name: '', isSelf: true } : null;
   return { ...app, isSelf: app.isSelf || focusedSelf };
+}
+
+// 自動貼り付けの判断と結果を output.log に残す(貼り付けされない時の調査用)
+function logOutput(message) {
+  try {
+    fs.appendFileSync(path.join(APP_USER_DATA_DIR, 'output.log'), `[${new Date().toISOString()}] ${message}\n`);
+  } catch {
+    // ログ書き込み失敗は無視
+  }
 }
 
 async function sendKeystroke(action, target) {
   const command = buildKeystrokeCommand({ platform: process.platform, action, targetPid: target?.pid });
   if (!command) return false;
-  const { ok } = await runCommand(command.command, command.args);
+  const { ok, stderr } = await runCommand(command.command, command.args);
+  logOutput(`keystroke ${action} target=${JSON.stringify(target)} ok=${ok}${stderr ? ` stderr=${stderr}` : ''}`);
   return ok;
 }
 
-function snapshotClipboard() {
-  const image = clipboard.readImage();
-  return {
-    text: clipboard.readText(),
-    html: clipboard.readHTML(),
-    rtf: clipboard.readRTF(),
-    image: image.isEmpty() ? null : image,
-  };
+// Electron 44 以降の clipboard は非同期 API(readText/writeText/clear が Promise)で、
+// readHTML/readRTF/readImage は廃止された。退避・復元はテキストのみ行う。
+async function snapshotClipboard() {
+  return { text: await clipboard.readText() };
 }
 
-function restoreClipboardSnapshot(snapshot) {
+async function restoreClipboardSnapshot(snapshot) {
   if (!snapshot) return;
-  const data = {};
-  if (snapshot.text) data.text = snapshot.text;
-  if (snapshot.html) data.html = snapshot.html;
-  if (snapshot.rtf) data.rtf = snapshot.rtf;
-  if (snapshot.image) data.image = snapshot.image;
-
-  if (Object.keys(data).length === 0) {
-    clipboard.clear();
+  if (snapshot.text) {
+    await clipboard.writeText(snapshot.text);
   } else {
-    clipboard.write(data);
+    await clipboard.clear();
   }
 }
 
@@ -475,24 +476,24 @@ async function captureSelectedText(targetPromise) {
   });
   if (decision.action !== 'paste') return '';
 
-  const snapshot = snapshotClipboard();
+  const snapshot = await snapshotClipboard();
   let selectedText = '';
   try {
     await delay(COPY_SELECTION_DELAY_MS);
     // 選択が無いとコピーでクリップボードが変わらないため、空にしてから送って変化を待つ
-    clipboard.clear();
+    await clipboard.clear();
     if (!(await sendKeystroke('copy', target))) return '';
 
     const deadline = Date.now() + COPY_SELECTION_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      selectedText = clipboard.readText();
+      selectedText = await clipboard.readText();
       if (selectedText) break;
       await delay(50);
     }
   } catch (error) {
     console.error('Failed to capture selected text:', error);
   } finally {
-    restoreClipboardSnapshot(snapshot);
+    await restoreClipboardSnapshot(snapshot);
   }
   return selectedText;
 }
@@ -534,27 +535,34 @@ async function saveGeneratedText(text, session) {
     target,
   });
 
-  const saveToClipboard = (reason) => {
-    clipboard.writeText(text);
+  const saveToClipboard = async (reason) => {
+    await clipboard.writeText(text);
     shell.beep();
     notifyPasteFallback(reason);
     return { copied: true, pasted: false, reason, feedback: 'beep' };
   };
 
+  logOutput(`decision=${JSON.stringify(decision)} target=${JSON.stringify(target)} trusted=${isAccessibilityTrusted()}`);
   if (decision.action !== 'paste') return saveToClipboard(decision.reason);
 
   const restoreClipboard = store.get('restoreClipboard', true);
-  const snapshot = restoreClipboard ? snapshotClipboard() : null;
-  clipboard.writeText(text);
+  const snapshot = restoreClipboard ? await snapshotClipboard() : null;
+  // 書き込み完了前に Cmd+V を送ると古い内容が貼られるため、必ず待つ
+  await clipboard.writeText(text);
 
   if (!(await sendKeystroke('paste', target))) {
     return saveToClipboard(OUTPUT_FALLBACK_REASON.PASTE_FAILED);
   }
 
   if (snapshot) {
-    setTimeout(() => {
-      if (shouldRestoreClipboard({ restoreClipboard, snapshot, currentText: clipboard.readText(), pastedText: text })) {
-        restoreClipboardSnapshot(snapshot);
+    setTimeout(async () => {
+      try {
+        const currentText = await clipboard.readText();
+        if (shouldRestoreClipboard({ restoreClipboard, snapshot, currentText, pastedText: text })) {
+          await restoreClipboardSnapshot(snapshot);
+        }
+      } catch (error) {
+        console.error('Failed to restore clipboard:', error);
       }
     }, CLIPBOARD_RESTORE_DELAY_MS);
   }
