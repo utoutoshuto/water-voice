@@ -49,6 +49,30 @@ npm run pack
 
 生成物は`release/`へ出力されます。
 
+### macOSの署名
+
+macOSでは署名 identity が変わると、再インストール時にマイク・アクセシビリティの許可（TCC）がリセットされることがあります。開発配布でも同じ自己署名証明書を継続して使ってください。
+
+初回だけ、ローカル署名用の自己署名証明書を作成してログインキーチェーンへ追加します。
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout water-voice-local.key -out water-voice-local.crt \
+  -days 3650 -nodes -subj '/CN=Water Voice Local' -addext 'extendedKeyUsage=codeSigning'
+openssl pkcs12 -export -out water-voice-local.p12 -inkey water-voice-local.key \
+  -in water-voice-local.crt -name 'Water Voice Local'
+security import water-voice-local.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+security find-identity -v -p codesigning
+rm water-voice-local.key water-voice-local.crt water-voice-local.p12
+```
+
+以後は identity 名を固定してビルドします。`CSC_NAME` を指定しない場合は ad-hoc 署名（`-`）になります。
+
+```bash
+CSC_NAME='Water Voice Local' npm run dist
+```
+
+Apple Developer の Developer ID 証明書を使う場合も、同じように `CSC_NAME` にその identity 名を指定します。
+
 ## Usage
 
 1. 設定画面でGemini APIキーを入力して保存

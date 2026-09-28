@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  deleteApiKey: () => ipcRenderer.invoke('delete-api-key'),
 
   // History
   getHistory: () => ipcRenderer.invoke('get-history'),

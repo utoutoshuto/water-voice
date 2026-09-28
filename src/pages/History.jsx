@@ -15,7 +15,9 @@ export default function History() {
   const [addedWords, setAddedWords] = useState(new Set());
 
   useEffect(() => {
-    load();
+    window.electronAPI.getHistory().then((data) => {
+      setHistory(Array.isArray(data) ? data : []);
+    });
   }, []);
 
   const load = async () => {
