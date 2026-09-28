@@ -17,13 +17,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   testGeminiApiKey: (apiKey, model) => ipcRenderer.invoke('test-gemini-api-key', { apiKey, model }),
 
   // Generated text output
+  // 自動貼り付けが有効なら録音開始時の前面アプリへ貼り付け、使えなければクリップボードへ保存する
   saveGeneratedText: (text, raw) => ipcRenderer.invoke('save-generated-text', { text, raw }),
 
-  // Kept for compatibility. This now saves to clipboard only.
-  insertText: (text, raw) => ipcRenderer.invoke('insert-text', { text, raw }),
-
-  // Active app
-  getActiveApp: () => ipcRenderer.invoke('get-active-app'),
+  // Accessibility permission (macOS の自動貼り付けに必要)
+  getAccessibilityStatus: () => ipcRenderer.invoke('get-accessibility-status'),
+  openAccessibilitySettings: () => ipcRenderer.invoke('open-accessibility-settings'),
 
   // Recording control
   // ユーザー起点のキャンセル (Esc / オーバーレイクリック)

@@ -25,12 +25,29 @@ const {
   nextRecordingPhase,
 } = require('./src/shared/recorderCore');
 const { generateHistoryId } = require('./src/shared/historyUtils');
+const {
+  OUTPUT_MODE,
+  DEFAULT_COMMAND_HOTKEY,
+  OUTPUT_FALLBACK_REASON,
+  getFrontmostAppCommand,
+  parseFrontmostApp,
+  buildKeystrokeCommand,
+  resolveOutputAction,
+  shouldRestoreClipboard,
+  buildCommandRequest,
+} = require('./src/shared/outputCore');
 
 const APP_NAME = 'Water Voice';
 const APP_DATA_DIR = app.getPath('appData');
 const APP_USER_DATA_DIR = path.join(APP_DATA_DIR, APP_NAME);
 const FAILED_RECORDINGS_DIR = path.join(APP_USER_DATA_DIR, 'failed-recordings');
 const FAILED_RECORDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// ホットキーの修飾キーを離す猶予。押したまま Cmd+C を送ると Cmd+Shift+C などになるため待つ。
+const COPY_SELECTION_DELAY_MS = 250;
+const COPY_SELECTION_TIMEOUT_MS = 600;
+// 貼り付け先アプリがクリップボードを読み終えるまで待ってから元の内容に戻す
+const CLIPBOARD_RESTORE_DELAY_MS = 600;
+const ACCESSIBILITY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility';
 
 app.setName(APP_NAME);
 app.setPath('userData', APP_USER_DATA_DIR);
@@ -47,6 +64,9 @@ const store = new Store({
     customInstructions: '',
     outputLanguage: 'same',
     snippets: [],
+    autoPaste: true,
+    restoreClipboard: true,
+    commandHotkey: DEFAULT_COMMAND_HOTKEY,
     history: [],
   },
 });
@@ -56,6 +76,9 @@ let overlayWindow = null;
 let tray = null;
 let recordingPhase = RECORDING_PHASE.IDLE;
 let registeredHotkey = null;
+let registeredCommandHotkey = null;
+// 録音 1 回分の出力先情報 { mode, targetPromise, selectionPromise }。idle に戻ると破棄する。
+let outputSession = null;
 let isEscapeRegistered = false;
 let isQuitting = false;
 
@@ -74,7 +97,11 @@ function runCommand(command, args) {
 }
 
 function sendRecordingState(phase) {
-  const payload = { phase, isRecording: phase === RECORDING_PHASE.RECORDING };
+  const payload = {
+    phase,
+    isRecording: phase === RECORDING_PHASE.RECORDING,
+    mode: outputSession?.mode || OUTPUT_MODE.DICTATION,
+  };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('recording-state', payload);
   }
@@ -116,6 +143,10 @@ function dispatchRecordingEvent(event) {
 
   if (nextPhase === RECORDING_PHASE.IDLE && overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.hide();
+  }
+
+  if (nextPhase === RECORDING_PHASE.IDLE) {
+    outputSession = null;
   }
 
   if (event === RECORDING_EVENT.CANCEL && mainWindow && !mainWindow.isDestroyed()) {
@@ -273,14 +304,192 @@ function registerHotkey(hotkey) {
   return success;
 }
 
-function toggleRecording() {
+// Command Mode 用のホットキー。空文字なら無効。
+function registerCommandHotkey(hotkey) {
+  if (registeredCommandHotkey) {
+    globalShortcut.unregister(registeredCommandHotkey);
+    registeredCommandHotkey = null;
+  }
+
+  if (!hotkey || typeof hotkey !== 'string') {
+    return true;
+  }
+
+  let success = false;
+  try {
+    success = globalShortcut.register(hotkey, () => {
+      toggleRecording(OUTPUT_MODE.COMMAND);
+    });
+  } catch (error) {
+    console.error('Command hotkey registration error:', error);
+  }
+
+  if (success) {
+    registeredCommandHotkey = hotkey;
+  } else {
+    console.error('Command hotkey registration failed:', hotkey);
+  }
+
+  return success;
+}
+
+// 録音開始時はモードと出力先 (その時点の前面アプリ) を記録する。停止時はモードに関係なく止める。
+function toggleRecording(mode = OUTPUT_MODE.DICTATION) {
+  if (recordingPhase === RECORDING_PHASE.IDLE) {
+    outputSession = beginOutputSession(mode);
+  }
   return dispatchRecordingEvent(RECORDING_EVENT.TOGGLE);
 }
 
-function saveGeneratedText(text) {
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAccessibilityTrusted() {
+  if (process.platform !== 'darwin') return true;
+  return systemPreferences.isTrustedAccessibilityClient(false);
+}
+
+function getAccessibilityStatus() {
+  const required = process.platform === 'darwin';
+  return { required, trusted: required ? isAccessibilityTrusted() : true };
+}
+
+// 録音開始時の前面アプリを取得する。Water Voice のウィンドウが前面なら貼り付け対象にしない。
+async function captureFrontmostApp() {
+  const focusedSelf = BrowserWindow.getFocusedWindow() !== null;
+  const command = getFrontmostAppCommand(process.platform);
+  if (!command) {
+    // macOS 以外は前面アプリを特定しない。貼り付け時の前面アプリへ送る。
+    return { pid: null, name: '', isSelf: focusedSelf };
+  }
+
+  const { ok, stdout } = await runCommand(command.command, command.args);
+  const app = ok ? parseFrontmostApp(stdout, process.pid) : null;
+  if (!app) return focusedSelf ? { pid: null, name: '', isSelf: true } : null;
+  return { ...app, isSelf: app.isSelf || focusedSelf };
+}
+
+async function sendKeystroke(action, target) {
+  const command = buildKeystrokeCommand({ platform: process.platform, action, targetPid: target?.pid });
+  if (!command) return false;
+  const { ok } = await runCommand(command.command, command.args);
+  return ok;
+}
+
+function snapshotClipboard() {
+  const image = clipboard.readImage();
+  return {
+    text: clipboard.readText(),
+    html: clipboard.readHTML(),
+    rtf: clipboard.readRTF(),
+    image: image.isEmpty() ? null : image,
+  };
+}
+
+function restoreClipboardSnapshot(snapshot) {
+  if (!snapshot) return;
+  const data = {};
+  if (snapshot.text) data.text = snapshot.text;
+  if (snapshot.html) data.html = snapshot.html;
+  if (snapshot.rtf) data.rtf = snapshot.rtf;
+  if (snapshot.image) data.image = snapshot.image;
+
+  if (Object.keys(data).length === 0) {
+    clipboard.clear();
+  } else {
+    clipboard.write(data);
+  }
+}
+
+// Command Mode: 前面アプリの選択テキストを Cmd/Ctrl+C で取得する。元のクリップボードは必ず戻す。
+async function captureSelectedText(targetPromise) {
+  const target = await targetPromise;
+  const decision = resolveOutputAction({
+    autoPaste: true,
+    platform: process.platform,
+    accessibilityTrusted: isAccessibilityTrusted(),
+    target,
+  });
+  if (decision.action !== 'paste') return '';
+
+  const snapshot = snapshotClipboard();
+  let selectedText = '';
+  try {
+    await delay(COPY_SELECTION_DELAY_MS);
+    // 選択が無いとコピーでクリップボードが変わらないため、空にしてから送って変化を待つ
+    clipboard.clear();
+    if (!(await sendKeystroke('copy', target))) return '';
+
+    const deadline = Date.now() + COPY_SELECTION_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      selectedText = clipboard.readText();
+      if (selectedText) break;
+      await delay(50);
+    }
+  } catch (error) {
+    console.error('Failed to capture selected text:', error);
+  } finally {
+    restoreClipboardSnapshot(snapshot);
+  }
+  return selectedText;
+}
+
+function beginOutputSession(mode) {
+  const targetPromise = captureFrontmostApp().catch((error) => {
+    console.error('Failed to get frontmost app:', error);
+    return null;
+  });
+  const selectionPromise = mode === OUTPUT_MODE.COMMAND
+    ? captureSelectedText(targetPromise)
+    : Promise.resolve('');
+  return { mode, targetPromise, selectionPromise };
+}
+
+// 整形結果を出力する。自動貼り付けが有効なら録音開始時の前面アプリへ貼り、
+// 使えない場合はクリップボード保存 + beep にフォールバックする。
+async function saveGeneratedText(text, session) {
+  const target = session ? await session.targetPromise : null;
+  const decision = resolveOutputAction({
+    autoPaste: store.get('autoPaste', true),
+    platform: process.platform,
+    accessibilityTrusted: isAccessibilityTrusted(),
+    target,
+  });
+
+  const saveToClipboard = (reason) => {
+    clipboard.writeText(text);
+    shell.beep();
+    return { copied: true, pasted: false, reason, feedback: 'beep' };
+  };
+
+  if (decision.action !== 'paste') return saveToClipboard(decision.reason);
+
+  const restoreClipboard = store.get('restoreClipboard', true);
+  const snapshot = restoreClipboard ? snapshotClipboard() : null;
   clipboard.writeText(text);
-  shell.beep();
-  return { copied: true, feedback: 'beep' };
+
+  if (!(await sendKeystroke('paste', target))) {
+    return saveToClipboard(OUTPUT_FALLBACK_REASON.PASTE_FAILED);
+  }
+
+  if (snapshot) {
+    setTimeout(() => {
+      if (shouldRestoreClipboard({ restoreClipboard, snapshot, currentText: clipboard.readText(), pastedText: text })) {
+        restoreClipboardSnapshot(snapshot);
+      }
+    }, CLIPBOARD_RESTORE_DELAY_MS);
+  }
+
+  return { copied: !snapshot, pasted: true, reason: null, feedback: 'paste' };
+}
+
+// Command Mode の録音なら、選択テキストを Gemini 呼び出しオプションに含める
+async function resolveGeminiOptions(options = {}) {
+  const session = outputSession;
+  if (session?.mode !== OUTPUT_MODE.COMMAND) return options;
+  const selectedText = await session.selectionPromise;
+  return { ...options, mode: OUTPUT_MODE.COMMAND, selectedText };
 }
 
 function getPublicSettings() {
@@ -295,6 +504,9 @@ function getPublicSettings() {
     customInstructions: store.get('customInstructions', ''),
     outputLanguage: store.get('outputLanguage', 'same'),
     snippets: normalizeSnippets(store.get('snippets')),
+    autoPaste: store.get('autoPaste', true),
+    restoreClipboard: store.get('restoreClipboard', true),
+    commandHotkey: store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY),
   };
 }
 
@@ -332,14 +544,19 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   const language = options?.language ?? store.get('language', 'ja-JP');
   const customInstructions = store.get('customInstructions', '');
   const outputLanguage = store.get('outputLanguage', 'same');
-  const systemInstruction = buildGeminiInstruction({
-    language,
-    removeFillers,
-    dictionary,
-    customInstructions,
-    outputLanguage,
-    snippets,
-  });
+  const { systemInstruction, extraParts } = options?.mode === OUTPUT_MODE.COMMAND
+    ? buildCommandRequest({ selectedText: options.selectedText, language, dictionary, customInstructions })
+    : {
+      systemInstruction: buildGeminiInstruction({
+        language,
+        removeFillers,
+        dictionary,
+        customInstructions,
+        outputLanguage,
+        snippets,
+      }),
+      extraParts: [],
+    };
   const ai = new GoogleGenAI({ apiKey });
 
   let lastError = null;
@@ -349,7 +566,7 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
       try {
         const result = await withTimeout((abortSignal) => ai.models.generateContent({
           model: modelName,
-          contents: [{ inlineData: { data: audioBase64, mimeType } }],
+          contents: [{ inlineData: { data: audioBase64, mimeType } }, ...extraParts],
           config: {
             systemInstruction,
             thinkingConfig: getThinkingConfig(modelName),
@@ -496,6 +713,7 @@ ipcMain.handle('save-settings', (event, settings) => {
   try {
     const normalized = normalizeSettings(settings);
     const oldHotkey = store.get('hotkey');
+    const oldCommandHotkey = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY);
 
     Object.entries(normalized).forEach(([key, value]) => {
       store.set(key, value);
@@ -513,6 +731,21 @@ ipcMain.handle('save-settings', (event, settings) => {
         };
       }
       refreshTray();
+    }
+
+    if (normalized.commandHotkey !== undefined && normalized.commandHotkey !== oldCommandHotkey) {
+      const conflict = normalized.commandHotkey && normalized.commandHotkey === store.get('hotkey');
+      if (conflict || !registerCommandHotkey(normalized.commandHotkey)) {
+        store.set('commandHotkey', oldCommandHotkey);
+        registerCommandHotkey(oldCommandHotkey);
+        return {
+          success: false,
+          errorCode: 'HOTKEY_REGISTER_FAILED',
+          error: conflict
+            ? 'コマンドモードのホットキーは録音ホットキーと別のキーにしてください。'
+            : `「${normalized.commandHotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。`,
+        };
+      }
     }
 
     return { success: true };
@@ -564,14 +797,18 @@ ipcMain.handle('update-history-entry', (event, payload = {}) => {
 });
 
 ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
+  let options = payload.options;
   try {
-    const result = await processAudioWithGemini(payload.audioBase64, payload.mimeType, payload.options);
+    options = await resolveGeminiOptions(payload.options);
+    const result = await processAudioWithGemini(payload.audioBase64, payload.mimeType, options);
     return { success: true, text: result };
   } catch (error) {
     return {
       success: false,
       error: error.message,
       errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+      // 再送信時に同じ条件 (Command Mode の選択テキスト等) で送れるよう、実際に使ったオプションを返す
+      options,
     };
   }
 });
@@ -590,35 +827,32 @@ ipcMain.handle('test-gemini-api-key', async (event, payload = {}) => {
   }
 });
 
-ipcMain.handle('insert-text', async (event, payload = {}) => {
-  try {
-    const text = typeof payload.text === 'string' ? payload.text : '';
-    const raw = typeof payload.raw === 'string' ? payload.raw : '';
-    stopRecordingState({ hideOverlay: true });
-    addToHistory({ raw, processed: text });
-
-    const saveResult = saveGeneratedText(text);
-    return { success: true, ...saveResult };
-  } catch (error) {
-    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
-  }
-});
-
 ipcMain.handle('save-generated-text', async (event, payload = {}) => {
+  // idle に戻すと outputSession が破棄されるので先に取り出す。再送信時は null (クリップボード保存)。
+  const session = outputSession;
+  const mode = session?.mode || OUTPUT_MODE.DICTATION;
   try {
     const text = typeof payload.text === 'string' ? payload.text : '';
     const raw = typeof payload.raw === 'string' ? payload.raw : '';
-    stopRecordingState({ hideOverlay: true });
+    stopRecordingState();
     addToHistory({ raw, processed: text });
 
-    const saveResult = saveGeneratedText(text);
-    return { success: true, ...saveResult };
+    const saveResult = await saveGeneratedText(text, session);
+    return { success: true, mode, ...saveResult };
   } catch (error) {
-    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
+    return { success: false, mode, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
   }
 });
 
-ipcMain.handle('get-active-app', async () => 'Unknown');
+ipcMain.handle('get-accessibility-status', () => getAccessibilityStatus());
+
+ipcMain.handle('open-accessibility-settings', async () => {
+  if (process.platform !== 'darwin') return { success: false };
+  // prompt 付きで問い合わせると、システム設定の一覧に Water Voice が追加される
+  systemPreferences.isTrustedAccessibilityClient(true);
+  const { ok } = await runCommand('open', [ACCESSIBILITY_SETTINGS_URL]);
+  return { success: ok };
+});
 
 // ユーザー起点のキャンセル (オーバーレイクリック等)。録音中のみ有効。
 ipcMain.handle('cancel-recording', () => {
@@ -701,6 +935,7 @@ app.whenReady().then(async () => {
   createOverlayWindow();
   createTray();
   registerHotkey(store.get('hotkey'));
+  registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY));
 
   app.on('activate', () => {
     mainWindow?.show();

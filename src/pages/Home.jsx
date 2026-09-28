@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useRecorder } from '../hooks/useRecorder';
+import AccessibilityNotice from '../components/AccessibilityNotice';
 
 // 録音中の音量メーター。録音ロジックは RecorderProvider 側にあり、ここは描画だけを担当する。
 function AudioMeter({ analyser }) {
@@ -80,6 +81,7 @@ export default function Home() {
     failedRecordingId,
     retrying,
     analyser,
+    mode,
     toggleRecording,
     retryFailedRecording,
     discardFailedRecording,
@@ -99,6 +101,8 @@ export default function Home() {
   if (!settings) return <div style={{ padding: 24, color: '#888' }}>読み込み中...</div>;
 
   const noApiKey = !settings.apiKey;
+  const isCommand = mode === 'command';
+  const outputLabel = settings.autoPaste ? '前面のアプリに貼り付けます' : 'クリップボードに保存します';
 
   return (
     <div>
@@ -111,6 +115,8 @@ export default function Home() {
           Gemini APIキーが未設定です。設定画面で入力してください。
         </div>
       )}
+
+      <AccessibilityNotice enabled={settings.autoPaste} />
 
       {micPermission === 'denied' && (
         <div className="alert alert-error">
@@ -136,6 +142,12 @@ export default function Home() {
           </div>
           <p style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>
             どのアプリでもこのキーを押すと録音開始/停止します。
+            {settings.commandHotkey && (
+              <>
+                <br />
+                コマンドモード: <kbd style={{ background: '#242424', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>{settings.commandHotkey}</kbd>
+              </>
+            )}
           </p>
           <button
             className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'}`}
@@ -152,8 +164,12 @@ export default function Home() {
         <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
             <div className="recording-pulse" style={{ width: 14, height: 14, fontSize: 14 }} />
-            <span style={{ color: '#f97316', fontWeight: 600 }}>録音中...</span>
-            <span style={{ color: '#888', fontSize: 13 }}>停止するとGeminiが認識します</span>
+            <span style={{ color: isCommand ? '#a855f7' : '#f97316', fontWeight: 600 }}>
+              {isCommand ? 'コマンド録音中...' : '録音中...'}
+            </span>
+            <span style={{ color: '#888', fontSize: 13 }}>
+              {isCommand ? '選択テキストへの指示を話してください' : '停止するとGeminiが認識します'}
+            </span>
           </div>
 
           <AudioMeter analyser={analyser} />
@@ -164,14 +180,14 @@ export default function Home() {
         <div className="card">
           <div style={{ textAlign: 'center', padding: 24, color: '#888' }}>
             <div style={{ fontSize: 24, marginBottom: 12 }}>処理中</div>
-            <div>Geminiが音声認識・整形中...</div>
+            <div>{isCommand ? 'Geminiがコマンドを実行中...' : 'Geminiが音声認識・整形中...'}</div>
           </div>
         </div>
       )}
 
       {status === 'done' && (
         <div className="card">
-          <div className="card-title">整形結果</div>
+          <div className="card-title">{isCommand ? 'コマンド結果' : '整形結果'}</div>
           <div className="transcript-box" style={{ marginBottom: 12 }}>{processed}</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={() => copyToClipboard(processed)}>
@@ -204,7 +220,13 @@ export default function Home() {
           <li>設定画面でGemini APIキーを入力</li>
           <li>どのアプリでも <kbd style={{ background: '#242424', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>{settings.hotkey}</kbd> を押す</li>
           <li>話す。音量メーターで入力を確認</li>
-          <li>もう一度ホットキーを押すと、Geminiが整形してクリップボードに保存します</li>
+          <li>もう一度ホットキーを押すと、Geminiが整形して{outputLabel}</li>
+          {settings.commandHotkey && (
+            <li>
+              テキストを選択して <kbd style={{ background: '#242424', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>{settings.commandHotkey}</kbd> を押し、
+              「もっと簡潔に」「英訳して」などと話すと選択範囲を書き換えます。未選択なら指示どおりに新しく作成します
+            </li>
+          )}
         </ol>
       </div>
     </div>

@@ -4,6 +4,7 @@ import {
   evaluateRecordedAudio,
   resolveAudioConstraints,
 } from '../shared/recorderCore';
+import { OUTPUT_MODE, describeOutputResult } from '../shared/outputCore';
 
 const MIME_TYPE_CANDIDATES = [
   'audio/webm;codecs=opus',
@@ -61,6 +62,7 @@ export function RecorderProvider({ children }) {
   const [failedRecordingId, setFailedRecordingId] = useState(null);
   const [retrying, setRetrying] = useState(false);
   const [analyser, setAnalyser] = useState(null);
+  const [mode, setMode] = useState(OUTPUT_MODE.DICTATION);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -139,12 +141,12 @@ export function RecorderProvider({ children }) {
     setProcessed(text);
     setStatus('done');
 
-    // saveGeneratedText が履歴追加とクリップボード保存を行う (再送信時も同じ経路)
+    // saveGeneratedText が履歴追加と出力 (自動貼り付け or クリップボード保存) を行う (再送信時も同じ経路)
     const saveResult = await window.electronAPI.saveGeneratedText(text);
     if (saveResult.success) {
-      setNotice('完了。テキストをクリップボードに保存しました。');
+      setNotice(describeOutputResult(saveResult));
     } else {
-      setNotice('整形は完了しましたが、クリップボード保存に失敗しました。');
+      setNotice('整形は完了しましたが、テキストの出力に失敗しました。');
     }
   };
 
@@ -193,7 +195,8 @@ export function RecorderProvider({ children }) {
       );
 
       if (!result.success) {
-        await handleTranscribeFailure(base64, actualMimeType.split(';')[0], requestOptions, result.error);
+        // Command Mode では main が選択テキストを含めたオプションを返すので、それを保存して再送信に使う
+        await handleTranscribeFailure(base64, actualMimeType.split(';')[0], result.options || requestOptions, result.error);
         return;
       }
 
@@ -336,7 +339,8 @@ export function RecorderProvider({ children }) {
   useEffect(() => {
     window.electronAPI.checkMicPermission().then(setMicPermission);
 
-    const offState = window.electronAPI.onRecordingState(({ phase }) => {
+    const offState = window.electronAPI.onRecordingState(({ phase, mode: nextMode }) => {
+      if (phase !== RECORDING_PHASE.IDLE) setMode(nextMode || OUTPUT_MODE.DICTATION);
       if (phase === RECORDING_PHASE.RECORDING) {
         handlersRef.current.startRecording();
       } else if (phase === RECORDING_PHASE.PROCESSING) {
@@ -404,13 +408,14 @@ export function RecorderProvider({ children }) {
     failedRecordingId,
     retrying,
     analyser,
+    mode,
     toggleRecording,
     retryFailedRecording,
     discardFailedRecording,
     clearResult,
   }), [
     isRecording, status, processed, notice, errorMsg, micPermission,
-    failedRecordingId, retrying, analyser, toggleRecording,
+    failedRecordingId, retrying, analyser, mode, toggleRecording,
     retryFailedRecording, discardFailedRecording, clearResult,
   ]);
 

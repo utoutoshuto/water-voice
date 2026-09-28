@@ -36,15 +36,32 @@ const overlayStyles = {
     background: '#3b82f6',
     animation: 'spin 1s linear infinite',
   },
+  // Command Mode は色を変えて通常の音声入力と区別する
+  command: {
+    border: '1px solid rgba(168, 85, 247, 0.5)',
+  },
+  commandText: {
+    color: '#a855f7',
+  },
+  commandDot: {
+    background: '#a855f7',
+  },
+};
+
+const LABELS = {
+  dictation: { recording: '録音中', processing: '整形中...' },
+  command: { recording: 'コマンド: 指示を話す', processing: 'コマンド実行中...' },
 };
 
 export default function Overlay() {
   const [state, setState] = useState(null); // null | recording | processing
+  const [mode, setMode] = useState('dictation'); // dictation | command
 
   useEffect(() => {
     // main の録音状態 (idle | recording | processing) にそのまま従う
-    const offState = window.electronAPI.onRecordingState(({ phase }) => {
+    const offState = window.electronAPI.onRecordingState(({ phase, mode: nextMode }) => {
       setState(phase === 'recording' || phase === 'processing' ? phase : null);
+      setMode(nextMode === 'command' ? 'command' : 'dictation');
     });
 
     // ウィンドウ非表示中はCSSアニメーション(blink/spin)を止めてGPU/CPU負荷をなくす
@@ -64,6 +81,7 @@ export default function Overlay() {
   if (!state) return null;
 
   const isProcessing = state === 'processing';
+  const isCommand = mode === 'command';
 
   return (
     <>
@@ -88,14 +106,28 @@ export default function Overlay() {
         }
       `}</style>
       <div
-        style={{ ...overlayStyles.container, ...(isProcessing ? overlayStyles.processing : {}) }}
+        style={{
+          ...overlayStyles.container,
+          ...(isProcessing ? overlayStyles.processing : {}),
+          ...(isCommand ? overlayStyles.command : {}),
+        }}
         onClick={() => {
           if (!isProcessing) window.electronAPI.cancelRecording();
         }}
       >
-        <div style={{ ...overlayStyles.dot, ...(isProcessing ? overlayStyles.processingDot : {}) }} />
-        <span style={{ ...overlayStyles.text, ...(isProcessing ? overlayStyles.processingText : {}) }}>
-          {isProcessing ? '整形中...' : '録音中'}
+        <div style={{
+          ...overlayStyles.dot,
+          ...(isProcessing ? overlayStyles.processingDot : {}),
+          ...(isCommand ? overlayStyles.commandDot : {}),
+        }}
+        />
+        <span style={{
+          ...overlayStyles.text,
+          ...(isProcessing ? overlayStyles.processingText : {}),
+          ...(isCommand ? overlayStyles.commandText : {}),
+        }}
+        >
+          {LABELS[mode][state]}
         </span>
       </div>
     </>
