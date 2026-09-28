@@ -162,6 +162,12 @@ export default function Settings() {
     setErrorMsg('');
     const result = await window.electronAPI.saveSettings(settings);
     if (result.success) {
+      setSettings((prev) => ({
+        ...prev,
+        hasApiKey: prev.apiKey ? true : prev.hasApiKey,
+        apiKeyLast4: prev.apiKey ? prev.apiKey.slice(-4) : prev.apiKeyLast4,
+        apiKey: '',
+      }));
       setSavedMsg('設定を保存しました');
       setTimeout(() => setSavedMsg(''), 3000);
     } else {
@@ -194,6 +200,18 @@ export default function Settings() {
     }
   };
 
+  const handleApiKeyDelete = async () => {
+    setSavedMsg('');
+    setErrorMsg('');
+    const result = await window.electronAPI.deleteApiKey();
+    if (result.success) {
+      setSettings((prev) => ({ ...prev, apiKey: '', hasApiKey: false, apiKeyLast4: '' }));
+      setSavedMsg('APIキーを削除しました');
+    } else {
+      setErrorMsg(result.error || 'APIキーの削除に失敗しました。');
+    }
+  };
+
   const update = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }));
 
   if (!settings) return <div style={{ padding: 24, color: '#888' }}>読み込み中...</div>;
@@ -214,7 +232,7 @@ export default function Settings() {
             <input
               type={showApiKey ? 'text' : 'password'}
               className="form-input"
-              placeholder="AIza..."
+              placeholder={settings.hasApiKey ? `設定済み（末尾: ${settings.apiKeyLast4}）` : 'AIza...'}
               value={settings.apiKey}
               onChange={(e) => update('apiKey', e.target.value)}
             />
@@ -224,14 +242,19 @@ export default function Settings() {
             <button
               className="btn btn-ghost"
               onClick={handleApiKeyTest}
-              disabled={!settings.apiKey || isTestingApiKey}
+              disabled={(!settings.apiKey && !settings.hasApiKey) || isTestingApiKey}
               style={{ flexShrink: 0 }}
             >
               {isTestingApiKey ? '確認中' : '接続確認'}
             </button>
+            {settings.hasApiKey && (
+              <button className="btn btn-ghost" onClick={handleApiKeyDelete} style={{ flexShrink: 0 }}>
+                削除
+              </button>
+            )}
           </div>
           <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
-            Google AI Studioで取得できます。キーはローカルに保存されます。
+            Google AI Studioで取得できます。変更する場合のみ入力してください。キーはローカルで暗号化して保存されます。
           </p>
         </div>
       </div>

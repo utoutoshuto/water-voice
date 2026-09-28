@@ -5,13 +5,10 @@ export default function History() {
   const [copied, setCopied] = useState(null);
 
   useEffect(() => {
-    load();
+    window.electronAPI.getHistory().then((data) => {
+      setHistory(Array.isArray(data) ? data : []);
+    });
   }, []);
-
-  const load = async () => {
-    const data = await window.electronAPI.getHistory();
-    setHistory(Array.isArray(data) ? data : []);
-  };
 
   const handleClear = async () => {
     if (!confirm('履歴をすべて削除しますか？')) return;

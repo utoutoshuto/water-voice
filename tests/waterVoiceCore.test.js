@@ -7,6 +7,7 @@ const {
   DEFAULT_GEMINI_MODEL,
   normalizeDictionary,
   normalizeSnippets,
+  getApiKeyLast4,
   normalizeSettings,
   getGeminiModelOrder,
   getThinkingConfig,
@@ -75,6 +76,13 @@ test('normalizeSnippets drops invalid entries and caps size', () => {
 
   assert.deepEqual(result[0], { trigger: '署名', text: '本文' });
   assert.equal(result.length, MAX_SNIPPETS);
+});
+
+test('getApiKeyLast4 returns only the final four characters for display', () => {
+  assert.equal(getApiKeyLast4('  AIza1234  '), '1234');
+  assert.equal(getApiKeyLast4('abc'), 'abc');
+  assert.equal(getApiKeyLast4(''), '');
+  assert.equal(getApiKeyLast4(null), '');
 });
 
 test('getGeminiModelOrder starts with the selected model and defaults invalid values', () => {

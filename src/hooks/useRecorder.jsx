@@ -32,7 +32,7 @@ async function openMicrophoneStream(deviceId) {
   if (deviceId && navigator.mediaDevices.enumerateDevices) {
     try {
       devices = await navigator.mediaDevices.enumerateDevices();
-    } catch (err) {
+    } catch {
       devices = [];
     }
   }
@@ -331,7 +331,10 @@ export function RecorderProvider({ children }) {
 
   // IPC リスナから常に最新のハンドラを呼べるよう ref 経由で参照する
   const handlersRef = useRef({});
-  handlersRef.current = { startRecording, stopRecording, cancelLocalRecording };
+
+  useEffect(() => {
+    handlersRef.current = { startRecording, stopRecording, cancelLocalRecording };
+  });
 
   useEffect(() => {
     window.electronAPI.checkMicPermission().then(setMicPermission);

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, systemPreferences, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, safeStorage, systemPreferences, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -11,6 +11,7 @@ const {
   normalizeDictionary,
   normalizeSnippets,
   normalizeSettings,
+  getApiKeyLast4,
   getGeminiModelOrder,
   getThinkingConfig,
   buildGeminiInstruction,
@@ -36,7 +37,7 @@ app.setPath('userData', APP_USER_DATA_DIR);
 
 const store = new Store({
   defaults: {
-    apiKey: '',
+    apiKeyEncrypted: '',
     hotkey: 'CommandOrControl+Shift+Space',
     language: 'ja-JP',
     model: DEFAULT_GEMINI_MODEL,
@@ -57,6 +58,61 @@ let recordingPhase = RECORDING_PHASE.IDLE;
 let registeredHotkey = null;
 let isEscapeRegistered = false;
 let isQuitting = false;
+
+function isSafeStorageAvailable() {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch (error) {
+    console.warn('safeStorage が利用できないため、APIキーを平文で保存します。', error);
+    return false;
+  }
+}
+
+function getStoredApiKey() {
+  const encrypted = store.get('apiKeyEncrypted', '');
+  if (encrypted) {
+    if (!isSafeStorageAvailable()) {
+      console.warn('safeStorage が利用できないため、暗号化済みのAPIキーを読み込めません。');
+      return '';
+    }
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    } catch (error) {
+      console.error('暗号化済みAPIキーの復号に失敗しました。', error);
+      return '';
+    }
+  }
+
+  return typeof store.get('apiKey') === 'string' ? store.get('apiKey').trim() : '';
+}
+
+function saveApiKey(apiKey) {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!key) return;
+
+  if (isSafeStorageAvailable()) {
+    store.set('apiKeyEncrypted', safeStorage.encryptString(key).toString('base64'));
+    store.delete('apiKey');
+    return;
+  }
+
+  console.warn('safeStorage が利用できないため、APIキーを平文で保存します。');
+  store.delete('apiKeyEncrypted');
+  store.set('apiKey', key);
+}
+
+function deleteApiKey() {
+  store.delete('apiKeyEncrypted');
+  store.delete('apiKey');
+}
+
+function migrateLegacyApiKey() {
+  const legacyApiKey = typeof store.get('apiKey') === 'string' ? store.get('apiKey').trim() : '';
+  if (!legacyApiKey) return;
+
+  saveApiKey(legacyApiKey);
+  if (isSafeStorageAvailable()) store.delete('apiKey');
+}
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -283,8 +339,10 @@ function saveGeneratedText(text) {
 }
 
 function getPublicSettings() {
+  const apiKey = getStoredApiKey();
   return {
-    apiKey: store.get('apiKey'),
+    hasApiKey: Boolean(apiKey),
+    apiKeyLast4: getApiKeyLast4(apiKey),
     hotkey: store.get('hotkey'),
     language: store.get('language'),
     model: store.get('model', DEFAULT_GEMINI_MODEL),
@@ -318,7 +376,7 @@ async function withTimeout(request, timeoutMs) {
 async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   validateAudioPayload(audioBase64, mimeType);
 
-  const apiKey = store.get('apiKey');
+  const apiKey = getStoredApiKey();
   if (!apiKey) {
     throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
       errorCode: 'GEMINI_API_KEY_MISSING',
@@ -378,9 +436,9 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
 }
 
 async function testGeminiApiKey(apiKey, model) {
-  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  const key = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : getStoredApiKey();
   if (!key) {
-    throw Object.assign(new Error('Gemini APIキーを入力してください。'), {
+    throw Object.assign(new Error('Gemini APIキーが設定されていません。'), {
       errorCode: 'GEMINI_API_KEY_MISSING',
     });
   }
@@ -497,8 +555,11 @@ ipcMain.handle('save-settings', (event, settings) => {
     const oldHotkey = store.get('hotkey');
 
     Object.entries(normalized).forEach(([key, value]) => {
+      if (key === 'apiKey') return;
       store.set(key, value);
     });
+
+    if (normalized.apiKey) saveApiKey(normalized.apiKey);
 
     if (normalized.hotkey && normalized.hotkey !== oldHotkey) {
       const success = registerHotkey(normalized.hotkey);
@@ -518,6 +579,11 @@ ipcMain.handle('save-settings', (event, settings) => {
   } catch (error) {
     return { success: false, errorCode: 'SETTINGS_SAVE_FAILED', error: error.message };
   }
+});
+
+ipcMain.handle('delete-api-key', () => {
+  deleteApiKey();
+  return { success: true };
 });
 
 ipcMain.handle('get-history', () => {
@@ -662,6 +728,7 @@ ipcMain.handle('check-mic-permission', async () => {
 });
 
 app.whenReady().then(async () => {
+  migrateLegacyApiKey();
   await checkMicrophonePermission();
   cleanupOldFailedRecordings();
   createMainWindow();

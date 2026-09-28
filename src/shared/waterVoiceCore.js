@@ -58,6 +58,11 @@ function normalizeOutputLanguage(value) {
   return /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/.test(language) ? language : 'same';
 }
 
+function getApiKeyLast4(value) {
+  const apiKey = typeof value === 'string' ? value.trim() : '';
+  return apiKey ? apiKey.slice(-4) : '';
+}
+
 // Gemini 3 系は thinkingBudget: 0 を 400 で拒否するモデルがある(3.5-flash-lite 等)ため thinkingLevel を使う。
 // 2.5 系は thinkingLevel 非対応なので従来どおり thinkingBudget: 0 で無効化する。
 function getThinkingConfig(model) {
@@ -219,6 +224,7 @@ module.exports = {
   normalizeDictionary,
   normalizeSnippets,
   normalizeOutputLanguage,
+  getApiKeyLast4,
   normalizeSettings,
   getGeminiModelOrder,
   getThinkingConfig,
