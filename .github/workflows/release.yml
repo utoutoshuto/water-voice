@@ -25,7 +25,31 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # 固定の自己署名証明書を一時キーチェーンに取り込み、build/sign-mac.js から使えるようにする。
+      # 同じ証明書で署名し続けることで、自動更新後もマイク等の許可が維持される。
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          WV_SIGN_P12: ${{ secrets.WV_SIGN_P12 }}
+          WV_SIGN_P12_PASSWORD: ${{ secrets.WV_SIGN_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "$WV_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$WV_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/signing.p12"
+          echo "WV_SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
       - run: npx electron-builder --config electron-builder.config.js --publish never
+      # 署名が固定証明書になっていることを確認する(ad-hoc だと自動更新できないため失敗させる)
+      - name: Verify signature (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign -dr - "release/mac-arm64/Water Voice.app" 2>&1 | tee /dev/stderr | grep -q 'certificate root'
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.os }}

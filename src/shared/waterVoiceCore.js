@@ -19,6 +19,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'snippets',
   'autoPaste',
   'restoreClipboard',
+  'autoUpdate',
   'commandHotkey',
 ]);
 
@@ -89,7 +90,7 @@ function normalizeSettings(settings = {}) {
       normalized[key] = typeof value === 'string' ? value.trim() : '';
     } else if (key === 'model') {
       normalized[key] = GEMINI_MODELS.includes(value) ? value : DEFAULT_GEMINI_MODEL;
-    } else if (key === 'removeFillers' || key === 'autoPaste' || key === 'restoreClipboard') {
+    } else if (key === 'removeFillers' || key === 'autoPaste' || key === 'restoreClipboard' || key === 'autoUpdate') {
       normalized[key] = Boolean(value);
     } else if (key === 'customDictionary') {
       normalized[key] = normalizeDictionary(value);

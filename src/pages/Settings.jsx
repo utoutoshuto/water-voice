@@ -320,6 +320,26 @@ export default function Settings() {
       </div>
 
       <div className="card">
+        <div className="card-title">アップデート</div>
+        <div className="toggle-row">
+          <div>
+            <div className="toggle-label">起動時に自動でアップデート</div>
+            <div className="toggle-desc">
+              起動時に GitHub の最新版を確認し、新しい版があれば自動でダウンロードして再起動します（現在 v{settings.appVersion}）
+            </div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.autoUpdate}
+              onChange={(e) => update('autoUpdate', e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="card">
         <div className="card-title">音声認識</div>
         <div className="form-group">
           <label className="form-label">Geminiモデル</label>

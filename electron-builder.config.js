@@ -1,5 +1,6 @@
 module.exports = {
   appId: 'com.water-voice.app',
+  afterPack: './build/sign-mac.js',
   productName: 'Water Voice',
   directories: {
     output: 'release',
@@ -11,8 +12,9 @@ module.exports = {
     entitlementsInherit: 'entitlements.mac.plist',
     hardenedRuntime: false,
     gatekeeperAssess: false,
-    // CSC_NAME がなければ ad-hoc 署名にして、署名 identity を毎回変えない。
-    identity: process.env.CSC_NAME || '-',
+    // 署名は build/sign-mac.js (afterPack) で固定の自己署名証明書を使って行う。
+    // electron-builder は自己署名証明書を有効な identity として扱わないため、ここでは署名しない。
+    identity: null,
     target: ['dmg', 'zip'],
     extendInfo: {
       NSMicrophoneUsageDescription: '音声入力のためにマイクへのアクセスが必要です。',
@@ -40,6 +42,7 @@ module.exports = {
     'dist/**/*',
     'main.js',
     'preload.js',
+    'updater.js',
     'assets/**/*',
     'src/shared/**/*',
   ],

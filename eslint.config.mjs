@@ -9,7 +9,7 @@ export default [
   },
   js.configs.recommended,
   {
-    files: ['main.js', 'preload.js', 'webpack.config.js', 'electron-builder.config.js', 'tests/**/*.js', 'src/shared/**/*.js'],
+    files: ['main.js', 'preload.js', 'updater.js', 'build/**/*.js', 'webpack.config.js', 'electron-builder.config.js', 'tests/**/*.js', 'src/shared/**/*.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'commonjs',

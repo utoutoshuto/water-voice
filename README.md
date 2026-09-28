@@ -35,11 +35,18 @@ AI音声入力アプリ。話した音声をGemini APIで文字起こし・整�
 3. 起動するとメニューバーに常駐します。マイクの許可ダイアログで「許可」を選択
 4. 自動貼り付けを使う場合は、システム設定 > プライバシーとセキュリティ > アクセシビリティ で Water Voice を ON
 
-アップデート時は同じ手順で上書きしてください。署名が変わるとマイク/アクセシビリティの許可が外れることがあるため、その場合は再度許可してください。
+#### 自動アップデート
+
+v1.4.1 以降は、起動時に GitHub の最新リリースを確認し、新しい版があれば自動でダウンロード・入れ替え・再起動します（設定 > アップデート で OFF にできます）。
+
+- ダウンロードした版が同じ証明書で署名されていることを確認してから入れ替えます
+- 同じ証明書で署名し続けるため、アップデート後もマイク/アクセシビリティの許可は維持されます
+- v1.4.0 以前からは自動では上がりません。v1.4.1 だけは上記の手順で手動インストールしてください（署名が変わるため、マイク/アクセシビリティの許可も一度だけやり直しが必要です）
+- 経過は `~/Library/Application Support/Water Voice/update.log` に記録されます
 
 ### Windows
 
-`Water.Voice.Setup.<version>.exe` を実行してください。未署名のため SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択します。
+`Water.Voice.Setup.<version>.exe` を実行してください。未署名のため SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択します。Windows 版は起動時に新しい版があると通知し、クリックでダウンロードページを開きます。
 
 ## Release
 
@@ -82,27 +89,13 @@ npm run pack
 
 ### macOSの署名
 
-macOSでは署名 identity が変わると、再インストール時にマイク・アクセシビリティの許可（TCC）がリセットされることがあります。開発配布でも同じ自己署名証明書を継続して使ってください。
+macOS はマイク・アクセシビリティの許可（TCC）を署名の証明書にひも付けて記録します。ビルドごとに署名が変わると別アプリ扱いになり、許可が外れ、自動アップデートの署名検証も通りません。そのため、固定の自己署名証明書「Water Voice Code Signing」で署名しています。
 
-初回だけ、ローカル署名用の自己署名証明書を作成してログインキーチェーンへ追加します。
+- 署名は `build/sign-mac.js`（electron-builder の `afterPack`）が行います。キーチェーンに「Water Voice Code Signing」があればそれで署名し、なければ ad-hoc 署名にフォールバックします
+- GitHub Actions では Secrets の `WV_SIGN_P12`（p12 を base64 化したもの）と `WV_SIGN_P12_PASSWORD` から一時キーチェーンに取り込んで署名します
+- 証明書の実体は開発者の Mac のログインキーチェーンにあります。別の Mac でビルドする場合は、キーチェーンアクセスから「Water Voice Code Signing」を p12 で書き出して取り込んでください
 
-```bash
-openssl req -x509 -newkey rsa:2048 -keyout water-voice-local.key -out water-voice-local.crt \
-  -days 3650 -nodes -subj '/CN=Water Voice Local' -addext 'extendedKeyUsage=codeSigning'
-openssl pkcs12 -export -out water-voice-local.p12 -inkey water-voice-local.key \
-  -in water-voice-local.crt -name 'Water Voice Local'
-security import water-voice-local.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
-security find-identity -v -p codesigning
-rm water-voice-local.key water-voice-local.crt water-voice-local.p12
-```
-
-以後は identity 名を固定してビルドします。`CSC_NAME` を指定しない場合は ad-hoc 署名（`-`）になります。
-
-```bash
-CSC_NAME='Water Voice Local' npm run dist
-```
-
-Apple Developer の Developer ID 証明書を使う場合も、同じように `CSC_NAME` にその identity 名を指定します。
+**証明書を作り直すと、既存ユーザーは自動アップデートできなくなります**（署名検証で弾かれるため手動で入れ直しが必要）。証明書は失くさないよう保管してください。
 
 ## Usage
 

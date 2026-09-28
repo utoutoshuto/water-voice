@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, safeStorage, systemPreferences, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, Notification, clipboard, nativeImage, dialog, safeStorage, systemPreferences, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -28,6 +28,7 @@ const {
   nextRecordingPhase,
 } = require('./src/shared/recorderCore');
 const { generateHistoryId } = require('./src/shared/historyUtils');
+const { checkForUpdatesOnStartup } = require('./updater');
 const {
   OUTPUT_MODE,
   DEFAULT_COMMAND_HOTKEY,
@@ -70,6 +71,8 @@ const store = new Store({
     autoPaste: true,
     restoreClipboard: true,
     commandHotkey: DEFAULT_COMMAND_HOTKEY,
+    autoUpdate: true,
+    lastRunVersion: '',
     history: [],
   },
 });
@@ -567,6 +570,8 @@ function getPublicSettings() {
     autoPaste: store.get('autoPaste', true),
     restoreClipboard: store.get('restoreClipboard', true),
     commandHotkey: store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY),
+    autoUpdate: store.get('autoUpdate', true),
+    appVersion: app.getVersion(),
   };
 }
 
@@ -1221,6 +1226,24 @@ ipcMain.handle('save-text-file', async (event, payload = {}) => {
   }
 });
 
+// 前回起動時からバージョンが変わっていれば更新完了を通知し、起動時に 1 回だけ新しい版を確認する。
+function startAutoUpdate() {
+  const currentVersion = app.getVersion();
+  const lastRunVersion = store.get('lastRunVersion', '');
+  if (lastRunVersion && lastRunVersion !== currentVersion && Notification.isSupported()) {
+    new Notification({ title: 'Water Voice を更新しました', body: `v${lastRunVersion} → v${currentVersion}` }).show();
+  }
+  store.set('lastRunVersion', currentVersion);
+
+  if (!store.get('autoUpdate', true)) return;
+  checkForUpdatesOnStartup({
+    isIdle: () => recordingPhase === RECORDING_PHASE.IDLE,
+    beforeQuit: () => {
+      isQuitting = true;
+    },
+  });
+}
+
 app.whenReady().then(async () => {
   migrateLegacyApiKey();
   await checkMicrophonePermission();
@@ -1230,6 +1253,7 @@ app.whenReady().then(async () => {
   createTray();
   registerHotkey(store.get('hotkey'));
   registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY));
+  startAutoUpdate();
 
   app.on('activate', () => {
     mainWindow?.show();
