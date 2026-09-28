@@ -1,6 +1,6 @@
 {
   "name": "water-voice",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "AI Voice Dictation powered by Gemini API",
   "main": "main.js",
   "scripts": {

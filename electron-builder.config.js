@@ -29,6 +29,13 @@ module.exports = {
     deleteAppDataOnUninstall: false,
     include: 'build/installer.nsh',
   },
+  // タグ push 時に GitHub Releases へ公開する(.github/workflows/release.yml)
+  publish: {
+    provider: 'github',
+    owner: 'utoutoshuto',
+    repo: 'water-voice',
+    releaseType: 'release',
+  },
   files: [
     'dist/**/*',
     'main.js',

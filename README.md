@@ -19,6 +19,37 @@ AI音声入力アプリ。話した音声をGemini APIで文字起こし・整�
 - APIキー接続確認
 - Escまたは録音オーバーレイクリックで録音キャンセル
 
+## Install
+
+[Releases](https://github.com/utoutoshuto/water-voice/releases/latest) から最新版をダウンロードしてください。
+
+### macOS (Apple Silicon)
+
+1. `Water.Voice-<version>-arm64.dmg` を開き、Water Voice を Applications フォルダへドラッグ
+2. 公証(notarization)していないため、初回起動前にターミナルで隔離属性を外す
+
+   ```bash
+   xattr -cr "/Applications/Water Voice.app"
+   ```
+
+3. 起動するとメニューバーに常駐します。マイクの許可ダイアログで「許可」を選択
+4. 自動貼り付けを使う場合は、システム設定 > プライバシーとセキュリティ > アクセシビリティ で Water Voice を ON
+
+アップデート時は同じ手順で上書きしてください。署名が変わるとマイク/アクセシビリティの許可が外れることがあるため、その場合は再度許可してください。
+
+### Windows
+
+`Water.Voice.Setup.<version>.exe` を実行してください。未署名のため SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択します。
+
+## Release
+
+`package.json` の version を上げてタグを push すると、GitHub Actions が macOS / Windows 版をビルドして Releases に公開します。
+
+```bash
+git tag v1.4.0
+git push origin v1.4.0
+```
+
 ## Requirements
 
 | 項目 | 要件 |
