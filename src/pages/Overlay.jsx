@@ -42,8 +42,9 @@ export default function Overlay() {
   const [state, setState] = useState(null); // null | recording | processing
 
   useEffect(() => {
-    window.electronAPI.onRecordingState(({ isRecording }) => {
-      setState(isRecording ? 'recording' : 'processing');
+    // main の録音状態 (idle | recording | processing) にそのまま従う
+    const offState = window.electronAPI.onRecordingState(({ phase }) => {
+      setState(phase === 'recording' || phase === 'processing' ? phase : null);
     });
 
     // ウィンドウ非表示中はCSSアニメーション(blink/spin)を止めてGPU/CPU負荷をなくす
@@ -55,7 +56,7 @@ export default function Overlay() {
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      window.electronAPI.removeRecordingStateListener();
+      offState();
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);

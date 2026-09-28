@@ -4,6 +4,7 @@ import Settings from './pages/Settings';
 import History from './pages/History';
 import Dictionary from './pages/Dictionary';
 import Overlay from './pages/Overlay';
+import { RecorderProvider } from './hooks/useRecorder';
 import './styles/global.css';
 
 const NAV_ITEMS = [
@@ -15,41 +16,48 @@ const NAV_ITEMS = [
 
 export default function App() {
   const [page, setPage] = useState('home');
-  const [isOverlay, setIsOverlay] = useState(false);
+  // null = 判定中。判定前にメイン UI (録音ロジック) をオーバーレイ窓でマウントしないようにする
+  const [isOverlay, setIsOverlay] = useState(null);
 
   useEffect(() => {
     window.electronAPI.isOverlay().then(setIsOverlay);
   }, []);
+
+  if (isOverlay === null) {
+    return null;
+  }
 
   if (isOverlay) {
     return <Overlay />;
   }
 
   return (
-    <div className="app">
-      <nav className="sidebar">
-        <div className="app-title">
-          <span className="app-icon">●</span>
-          <span>Water Voice</span>
-        </div>
-        <ul className="nav-list">
-          {NAV_ITEMS.map((item) => (
-            <li
-              key={item.id}
-              className={`nav-item ${page === item.id ? 'active' : ''}`}
-              onClick={() => setPage(item.id)}
-            >
-              {item.label}
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <main className="content">
-        {page === 'home' && <Home />}
-        {page === 'settings' && <Settings />}
-        {page === 'history' && <History />}
-        {page === 'dictionary' && <Dictionary />}
-      </main>
-    </div>
+    <RecorderProvider>
+      <div className="app">
+        <nav className="sidebar">
+          <div className="app-title">
+            <span className="app-icon">●</span>
+            <span>Water Voice</span>
+          </div>
+          <ul className="nav-list">
+            {NAV_ITEMS.map((item) => (
+              <li
+                key={item.id}
+                className={`nav-item ${page === item.id ? 'active' : ''}`}
+                onClick={() => setPage(item.id)}
+              >
+                {item.label}
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <main className="content">
+          {page === 'home' && <Home />}
+          {page === 'settings' && <Settings />}
+          {page === 'history' && <History />}
+          {page === 'dictionary' && <Dictionary />}
+        </main>
+      </div>
+    </RecorderProvider>
   );
 }
