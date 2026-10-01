@@ -1,16 +1,21 @@
 import React, { useEffect, useState } from 'react';
 
 const MAX_WORDS = 800;
+const MAX_SNIPPETS = 100;
 
 export default function Dictionary() {
   const [words, setWords] = useState([]);
   const [input, setInput] = useState('');
+  const [snippets, setSnippets] = useState([]);
+  const [snippetTrigger, setSnippetTrigger] = useState('');
+  const [snippetText, setSnippetText] = useState('');
   const [saved, setSaved] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     window.electronAPI.getSettings().then((settings) => {
       setWords(settings.customDictionary || []);
+      setSnippets(settings.snippets || []);
     });
   }, []);
 
@@ -18,6 +23,17 @@ export default function Dictionary() {
     const result = await window.electronAPI.saveSettings({ customDictionary: newWords });
     if (!result.success) {
       setErrorMsg(result.error || '辞書の保存に失敗しました。');
+      return;
+    }
+    setErrorMsg('');
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  const saveSnippets = async (newSnippets) => {
+    const result = await window.electronAPI.saveSettings({ snippets: newSnippets });
+    if (!result.success) {
+      setErrorMsg(result.error || 'スニペットの保存に失敗しました。');
       return;
     }
     setErrorMsg('');
@@ -50,6 +66,27 @@ export default function Dictionary() {
 
   const handleKeyDown = (event) => {
     if (event.key === 'Enter') addWord();
+  };
+
+  const addSnippet = () => {
+    const trigger = snippetTrigger.trim();
+    const text = snippetText.trim();
+    if (!trigger || !text) return;
+    if (snippets.length >= MAX_SNIPPETS) {
+      setErrorMsg(`スニペットは最大${MAX_SNIPPETS}件まで登録できます。`);
+      return;
+    }
+    const newSnippets = [...snippets, { trigger, text }];
+    setSnippets(newSnippets);
+    saveSnippets(newSnippets);
+    setSnippetTrigger('');
+    setSnippetText('');
+  };
+
+  const removeSnippet = (index) => {
+    const newSnippets = snippets.filter((_, itemIndex) => itemIndex !== index);
+    setSnippets(newSnippets);
+    saveSnippets(newSnippets);
   };
 
   return (
@@ -89,6 +126,49 @@ export default function Dictionary() {
                 {word}
                 <button onClick={() => removeWord(word)} aria-label={`${word}を削除`}>x</button>
               </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">スニペット</div>
+        <p style={{ color: '#888', fontSize: 14, marginTop: 0, marginBottom: 14 }}>
+          トリガー語を話すと、対応する本文に展開します（{snippets.length}/{MAX_SNIPPETS}）。
+        </p>
+        <div className="form-group">
+          <label className="form-label">トリガー語</label>
+          <input
+            type="text"
+            className="form-input"
+            placeholder="例: メール署名"
+            value={snippetTrigger}
+            onChange={(event) => setSnippetTrigger(event.target.value)}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">展開する本文</label>
+          <textarea
+            className="form-input"
+            rows={4}
+            placeholder="例: よろしくお願いいたします。"
+            value={snippetText}
+            onChange={(event) => setSnippetText(event.target.value)}
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+        <button className="btn btn-primary" onClick={addSnippet}>スニペットを追加</button>
+
+        {snippets.length > 0 && (
+          <div style={{ marginTop: 18, display: 'grid', gap: 10 }}>
+            {snippets.map((snippet, index) => (
+              <div key={`${snippet.trigger}-${index}`} style={{ background: '#1a1a1a', borderRadius: 6, padding: 12 }}>
+                <div style={{ color: '#8ec5ff', fontSize: 13, marginBottom: 6 }}>{snippet.trigger}</div>
+                <div style={{ whiteSpace: 'pre-wrap', fontSize: 14 }}>{snippet.text}</div>
+                <button className="btn btn-ghost" onClick={() => removeSnippet(index)} style={{ marginTop: 10, fontSize: 12 }}>
+                  削除
+                </button>
+              </div>
             ))}
           </div>
         )}

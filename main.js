@@ -1,37 +1,79 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, clipboard, nativeImage, dialog, systemPreferences, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, Notification, clipboard, nativeImage, dialog, safeStorage, systemPreferences, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const Store = require('electron-store');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const {
   MAX_HISTORY,
-  GEMINI_MODELS,
+  DEFAULT_GEMINI_MODEL,
   RETRYABLE_STATUS_CODES,
   normalizeDictionary,
+  normalizeSnippets,
   normalizeSettings,
+  getApiKeyLast4,
+  getGeminiModelOrder,
+  getThinkingConfig,
   buildGeminiInstruction,
   getErrorStatus,
   classifyGeminiError,
+  shouldFallbackGeminiError,
   validateAudioPayload,
+  getMimeTypeFromExtension,
+  buildFileTranscribeInstruction,
 } = require('./src/shared/waterVoiceCore');
+const {
+  RECORDING_PHASE,
+  RECORDING_EVENT,
+  nextRecordingPhase,
+} = require('./src/shared/recorderCore');
+const { generateHistoryId } = require('./src/shared/historyUtils');
+const { checkForUpdatesOnStartup } = require('./updater');
+const {
+  OUTPUT_MODE,
+  DEFAULT_COMMAND_HOTKEY,
+  OUTPUT_FALLBACK_REASON,
+  getFrontmostAppCommand,
+  parseFrontmostApp,
+  buildKeystrokeCommand,
+  resolveOutputAction,
+  shouldRestoreClipboard,
+  buildCommandRequest,
+  describeOutputResult,
+} = require('./src/shared/outputCore');
 
 const APP_NAME = 'Water Voice';
 const APP_DATA_DIR = app.getPath('appData');
 const APP_USER_DATA_DIR = path.join(APP_DATA_DIR, APP_NAME);
 const FAILED_RECORDINGS_DIR = path.join(APP_USER_DATA_DIR, 'failed-recordings');
 const FAILED_RECORDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// ホットキーの修飾キーを離す猶予。押したまま Cmd+C を送ると Cmd+Shift+C などになるため待つ。
+const COPY_SELECTION_DELAY_MS = 250;
+const COPY_SELECTION_TIMEOUT_MS = 600;
+// 貼り付け先アプリがクリップボードを読み終えるまで待ってから元の内容に戻す
+const CLIPBOARD_RESTORE_DELAY_MS = 600;
+const ACCESSIBILITY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility';
 
 app.setName(APP_NAME);
 app.setPath('userData', APP_USER_DATA_DIR);
 
 const store = new Store({
   defaults: {
-    apiKey: '',
+    apiKeyEncrypted: '',
     hotkey: 'CommandOrControl+Shift+Space',
     language: 'ja-JP',
+    model: DEFAULT_GEMINI_MODEL,
     removeFillers: true,
     customDictionary: [],
+    microphoneDeviceId: '',
+    customInstructions: '',
+    outputLanguage: 'same',
+    snippets: [],
+    autoPaste: true,
+    restoreClipboard: true,
+    commandHotkey: DEFAULT_COMMAND_HOTKEY,
+    autoUpdate: true,
+    lastRunVersion: '',
     history: [],
   },
 });
@@ -39,8 +81,68 @@ const store = new Store({
 let mainWindow = null;
 let overlayWindow = null;
 let tray = null;
-let isRecording = false;
+let recordingPhase = RECORDING_PHASE.IDLE;
+let registeredHotkey = null;
+let registeredCommandHotkey = null;
+// 録音 1 回分の出力先情報 { mode, targetPromise, selectionPromise }。idle に戻ると破棄する。
+let outputSession = null;
+let isEscapeRegistered = false;
 let isQuitting = false;
+
+function isSafeStorageAvailable() {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch (error) {
+    console.warn('safeStorage が利用できないため、APIキーを平文で保存します。', error);
+    return false;
+  }
+}
+
+function getStoredApiKey() {
+  const encrypted = store.get('apiKeyEncrypted', '');
+  if (encrypted) {
+    if (!isSafeStorageAvailable()) {
+      console.warn('safeStorage が利用できないため、暗号化済みのAPIキーを読み込めません。');
+      return '';
+    }
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    } catch (error) {
+      console.error('暗号化済みAPIキーの復号に失敗しました。', error);
+      return '';
+    }
+  }
+
+  return typeof store.get('apiKey') === 'string' ? store.get('apiKey').trim() : '';
+}
+
+function saveApiKey(apiKey) {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!key) return;
+
+  if (isSafeStorageAvailable()) {
+    store.set('apiKeyEncrypted', safeStorage.encryptString(key).toString('base64'));
+    store.delete('apiKey');
+    return;
+  }
+
+  console.warn('safeStorage が利用できないため、APIキーを平文で保存します。');
+  store.delete('apiKeyEncrypted');
+  store.set('apiKey', key);
+}
+
+function deleteApiKey() {
+  store.delete('apiKeyEncrypted');
+  store.delete('apiKey');
+}
+
+function migrateLegacyApiKey() {
+  const legacyApiKey = typeof store.get('apiKey') === 'string' ? store.get('apiKey').trim() : '';
+  if (!legacyApiKey) return;
+
+  saveApiKey(legacyApiKey);
+  if (isSafeStorageAvailable()) store.delete('apiKey');
+}
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -50,14 +152,18 @@ if (!singleInstanceLock) {
 
 function runCommand(command, args) {
   return new Promise((resolve) => {
-    execFile(command, args, { windowsHide: true }, (err, stdout) => {
-      resolve({ ok: !err, stdout: stdout ? stdout.trim() : '' });
+    execFile(command, args, { windowsHide: true }, (err, stdout, stderr) => {
+      resolve({ ok: !err, stdout: stdout ? stdout.trim() : '', stderr: stderr ? String(stderr).trim() : '' });
     });
   });
 }
 
-function sendRecordingState(nextIsRecording) {
-  const payload = { isRecording: nextIsRecording };
+function sendRecordingState(phase) {
+  const payload = {
+    phase,
+    isRecording: phase === RECORDING_PHASE.RECORDING,
+    mode: outputSession?.mode || OUTPUT_MODE.DICTATION,
+  };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('recording-state', payload);
   }
@@ -66,22 +172,56 @@ function sendRecordingState(nextIsRecording) {
   }
 }
 
-function stopRecordingState({ hideOverlay = true } = {}) {
-  isRecording = false;
-  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.hide();
-  }
-  sendRecordingState(false);
+// 録音中だけ Esc をグローバルに奪い、どのアプリからでもキャンセルできるようにする
+function registerEscapeShortcut() {
+  if (isEscapeRegistered) return;
+  isEscapeRegistered = globalShortcut.register('Escape', () => {
+    dispatchRecordingEvent(RECORDING_EVENT.CANCEL);
+  });
 }
 
-function cancelRecordingState({ hideOverlay = true } = {}) {
-  isRecording = false;
-  if (hideOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
+function unregisterEscapeShortcut() {
+  if (!isEscapeRegistered) return;
+  globalShortcut.unregister('Escape');
+  isEscapeRegistered = false;
+}
+
+// 録音状態 (idle | recording | processing) は main が唯一の正とし、
+// オーバーレイ表示・Esc 登録・renderer への通知はすべてこの遷移に従う。
+function dispatchRecordingEvent(event) {
+  const prevPhase = recordingPhase;
+  const nextPhase = nextRecordingPhase(prevPhase, event);
+  if (nextPhase === prevPhase) return prevPhase;
+
+  recordingPhase = nextPhase;
+
+  if (nextPhase === RECORDING_PHASE.RECORDING) {
+    positionOverlayNearCursor();
+    overlayWindow?.showInactive();
+    registerEscapeShortcut();
+  } else {
+    unregisterEscapeShortcut();
+  }
+
+  if (nextPhase === RECORDING_PHASE.IDLE && overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.hide();
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
+
+  if (nextPhase === RECORDING_PHASE.IDLE) {
+    outputSession = null;
+  }
+
+  if (event === RECORDING_EVENT.CANCEL && mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('recording-cancelled');
   }
+
+  sendRecordingState(nextPhase);
+  return nextPhase;
+}
+
+// 整形結果の保存時に呼ばれる。整形中のときだけ idle に戻す。
+function stopRecordingState() {
+  dispatchRecordingEvent(RECORDING_EVENT.PROCESSING_DONE);
 }
 
 function positionOverlayNearCursor() {
@@ -117,6 +257,10 @@ function createMainWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
+
+  // 録音ロジックを持つ renderer が再読み込み・クラッシュした場合、録音状態が戻らなくならないよう idle に戻す
+  mainWindow.webContents.on('did-finish-load', () => dispatchRecordingEvent(RECORDING_EVENT.FINISH));
+  mainWindow.webContents.on('render-process-gone', () => dispatchRecordingEvent(RECORDING_EVENT.FINISH));
 
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
@@ -194,64 +338,290 @@ function refreshTray() {
 }
 
 function registerHotkey(hotkey) {
-  globalShortcut.unregisterAll();
+  // Esc など他のショートカットを消さないよう、自分が登録したホットキーだけ解除する
+  if (registeredHotkey) {
+    globalShortcut.unregister(registeredHotkey);
+    registeredHotkey = null;
+  }
 
   if (!hotkey || typeof hotkey !== 'string') {
     return false;
   }
 
-  const success = globalShortcut.register(hotkey, () => {
-    toggleRecording();
-  });
+  let success = false;
+  try {
+    success = globalShortcut.register(hotkey, () => {
+      toggleRecording();
+    });
+  } catch (error) {
+    console.error('Hotkey registration error:', error);
+  }
 
-  if (!success) {
+  if (success) {
+    registeredHotkey = hotkey;
+  } else {
     console.error('Hotkey registration failed:', hotkey);
   }
 
   return success;
 }
 
-function toggleRecording() {
-  isRecording = !isRecording;
+// Command Mode 用のホットキー。空文字なら無効。
+function registerCommandHotkey(hotkey) {
+  if (registeredCommandHotkey) {
+    globalShortcut.unregister(registeredCommandHotkey);
+    registeredCommandHotkey = null;
+  }
 
-  if (isRecording) {
-    positionOverlayNearCursor();
-    overlayWindow?.showInactive();
-    sendRecordingState(true);
+  if (!hotkey || typeof hotkey !== 'string') {
+    return true;
+  }
+
+  let success = false;
+  try {
+    success = globalShortcut.register(hotkey, () => {
+      toggleRecording(OUTPUT_MODE.COMMAND);
+    });
+  } catch (error) {
+    console.error('Command hotkey registration error:', error);
+  }
+
+  if (success) {
+    registeredCommandHotkey = hotkey;
   } else {
-    sendRecordingState(false);
+    console.error('Command hotkey registration failed:', hotkey);
+  }
+
+  return success;
+}
+
+// 録音開始時はモードと出力先 (その時点の前面アプリ) を記録する。停止時はモードに関係なく止める。
+function toggleRecording(mode = OUTPUT_MODE.DICTATION) {
+  if (recordingPhase === RECORDING_PHASE.IDLE) {
+    outputSession = beginOutputSession(mode);
+  }
+  return dispatchRecordingEvent(RECORDING_EVENT.TOGGLE);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAccessibilityTrusted() {
+  if (process.platform !== 'darwin') return true;
+  return systemPreferences.isTrustedAccessibilityClient(false);
+}
+
+function getAccessibilityStatus() {
+  const required = process.platform === 'darwin';
+  return { required, trusted: required ? isAccessibilityTrusted() : true };
+}
+
+// 録音開始時の前面アプリを取得する。Water Voice のウィンドウが前面なら貼り付け対象にしない。
+async function captureFrontmostApp() {
+  const focusedSelf = BrowserWindow.getFocusedWindow() !== null;
+  const command = getFrontmostAppCommand(process.platform);
+  if (!command) {
+    // macOS 以外は前面アプリを特定しない。貼り付け時の前面アプリへ送る。
+    return { pid: null, name: '', isSelf: focusedSelf };
+  }
+
+  const { ok, stdout, stderr } = await runCommand(command.command, command.args);
+  const app = ok ? parseFrontmostApp(stdout, process.pid) : null;
+  logOutput(`frontmost ok=${ok} app=${JSON.stringify(app)} focusedSelf=${focusedSelf}${stderr ? ` stderr=${stderr}` : ''}`);
+  if (!app) return focusedSelf ? { pid: null, name: '', isSelf: true } : null;
+  return { ...app, isSelf: app.isSelf || focusedSelf };
+}
+
+// 自動貼り付けの判断と結果を output.log に残す(貼り付けされない時の調査用)
+function logOutput(message) {
+  try {
+    fs.appendFileSync(path.join(APP_USER_DATA_DIR, 'output.log'), `[${new Date().toISOString()}] ${message}\n`);
+  } catch {
+    // ログ書き込み失敗は無視
   }
 }
 
-function saveGeneratedText(text) {
-  clipboard.writeText(text);
-  shell.beep();
-  return { copied: true, feedback: 'beep' };
+async function sendKeystroke(action, target) {
+  const command = buildKeystrokeCommand({ platform: process.platform, action, targetPid: target?.pid });
+  if (!command) return false;
+  const { ok, stderr } = await runCommand(command.command, command.args);
+  logOutput(`keystroke ${action} target=${JSON.stringify(target)} ok=${ok}${stderr ? ` stderr=${stderr}` : ''}`);
+  return ok;
+}
+
+// Electron 44 以降の clipboard は非同期 API(readText/writeText/clear が Promise)で、
+// readHTML/readRTF/readImage は廃止された。退避・復元はテキストのみ行う。
+async function snapshotClipboard() {
+  return { text: await clipboard.readText() };
+}
+
+async function restoreClipboardSnapshot(snapshot) {
+  if (!snapshot) return;
+  if (snapshot.text) {
+    await clipboard.writeText(snapshot.text);
+  } else {
+    await clipboard.clear();
+  }
+}
+
+// Command Mode: 前面アプリの選択テキストを Cmd/Ctrl+C で取得する。元のクリップボードは必ず戻す。
+async function captureSelectedText(targetPromise) {
+  const target = await targetPromise;
+  const decision = resolveOutputAction({
+    autoPaste: true,
+    platform: process.platform,
+    accessibilityTrusted: isAccessibilityTrusted(),
+    target,
+  });
+  if (decision.action !== 'paste') return '';
+
+  const snapshot = await snapshotClipboard();
+  let selectedText = '';
+  try {
+    await delay(COPY_SELECTION_DELAY_MS);
+    // 選択が無いとコピーでクリップボードが変わらないため、空にしてから送って変化を待つ
+    await clipboard.clear();
+    if (!(await sendKeystroke('copy', target))) return '';
+
+    const deadline = Date.now() + COPY_SELECTION_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      selectedText = await clipboard.readText();
+      if (selectedText) break;
+      await delay(50);
+    }
+  } catch (error) {
+    console.error('Failed to capture selected text:', error);
+  } finally {
+    await restoreClipboardSnapshot(snapshot);
+  }
+  return selectedText;
+}
+
+function beginOutputSession(mode) {
+  const targetPromise = captureFrontmostApp().catch((error) => {
+    console.error('Failed to get frontmost app:', error);
+    return null;
+  });
+  const selectionPromise = mode === OUTPUT_MODE.COMMAND
+    ? captureSelectedText(targetPromise)
+    : Promise.resolve('');
+  return { mode, targetPromise, selectionPromise };
+}
+
+// 整形結果を出力する。自動貼り付けが有効なら録音開始時の前面アプリへ貼り、
+// 使えない場合はクリップボード保存 + beep にフォールバックする。
+// 自動貼り付けできなかった理由を通知する。ウィンドウを閉じて使っていても気づけるようにする。
+function notifyPasteFallback(reason) {
+  const notable = [OUTPUT_FALLBACK_REASON.ACCESSIBILITY, OUTPUT_FALLBACK_REASON.PASTE_FAILED];
+  if (!notable.includes(reason) || !Notification.isSupported()) return;
+  const notification = new Notification({
+    title: '自動貼り付けできませんでした',
+    body: `${describeOutputResult({ pasted: false, reason })} 設定 > 出力 を確認してください。`,
+  });
+  notification.on('click', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+  notification.show();
+}
+
+async function saveGeneratedText(text, session) {
+  const target = session ? await session.targetPromise : null;
+  const decision = resolveOutputAction({
+    autoPaste: store.get('autoPaste', true),
+    platform: process.platform,
+    accessibilityTrusted: isAccessibilityTrusted(),
+    target,
+  });
+
+  const saveToClipboard = async (reason) => {
+    await clipboard.writeText(text);
+    shell.beep();
+    notifyPasteFallback(reason);
+    return { copied: true, pasted: false, reason, feedback: 'beep' };
+  };
+
+  logOutput(`decision=${JSON.stringify(decision)} target=${JSON.stringify(target)} trusted=${isAccessibilityTrusted()}`);
+  if (decision.action !== 'paste') return saveToClipboard(decision.reason);
+
+  const restoreClipboard = store.get('restoreClipboard', true);
+  const snapshot = restoreClipboard ? await snapshotClipboard() : null;
+  // 書き込み完了前に Cmd+V を送ると古い内容が貼られるため、必ず待つ
+  await clipboard.writeText(text);
+
+  if (!(await sendKeystroke('paste', target))) {
+    return saveToClipboard(OUTPUT_FALLBACK_REASON.PASTE_FAILED);
+  }
+
+  if (snapshot) {
+    setTimeout(async () => {
+      try {
+        const currentText = await clipboard.readText();
+        if (shouldRestoreClipboard({ restoreClipboard, snapshot, currentText, pastedText: text })) {
+          await restoreClipboardSnapshot(snapshot);
+        }
+      } catch (error) {
+        console.error('Failed to restore clipboard:', error);
+      }
+    }, CLIPBOARD_RESTORE_DELAY_MS);
+  }
+
+  return { copied: !snapshot, pasted: true, reason: null, feedback: 'paste' };
+}
+
+// Command Mode の録音なら、選択テキストを Gemini 呼び出しオプションに含める
+async function resolveGeminiOptions(options = {}) {
+  const session = outputSession;
+  if (session?.mode !== OUTPUT_MODE.COMMAND) return options;
+  const selectedText = await session.selectionPromise;
+  return { ...options, mode: OUTPUT_MODE.COMMAND, selectedText };
 }
 
 function getPublicSettings() {
+  const apiKey = getStoredApiKey();
   return {
-    apiKey: store.get('apiKey'),
+    hasApiKey: Boolean(apiKey),
+    apiKeyLast4: getApiKeyLast4(apiKey),
     hotkey: store.get('hotkey'),
     language: store.get('language'),
+    model: store.get('model', DEFAULT_GEMINI_MODEL),
     removeFillers: store.get('removeFillers'),
     customDictionary: normalizeDictionary(store.get('customDictionary')),
+    microphoneDeviceId: store.get('microphoneDeviceId', ''),
+    customInstructions: store.get('customInstructions', ''),
+    outputLanguage: store.get('outputLanguage', 'same'),
+    snippets: normalizeSnippets(store.get('snippets')),
+    autoPaste: store.get('autoPaste', true),
+    restoreClipboard: store.get('restoreClipboard', true),
+    commandHotkey: store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY),
+    autoUpdate: store.get('autoUpdate', true),
+    appVersion: app.getVersion(),
   };
 }
 
-function withTimeout(promise, timeoutMs) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Gemini request timeout')), timeoutMs);
-  });
+async function withTimeout(request, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  try {
+    return await request(controller.signal);
+  } catch (error) {
+    if (timedOut) throw new Error('Gemini request timeout');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   validateAudioPayload(audioBase64, mimeType);
 
-  const apiKey = store.get('apiKey');
+  const apiKey = getStoredApiKey();
   if (!apiKey) {
     throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
       errorCode: 'GEMINI_API_KEY_MISSING',
@@ -259,29 +629,42 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
   }
 
   const dictionary = normalizeDictionary(store.get('customDictionary'));
+  const snippets = normalizeSnippets(store.get('snippets'));
   const removeFillers = options?.removeFillers ?? store.get('removeFillers', true);
   const language = options?.language ?? store.get('language', 'ja-JP');
-  const systemInstruction = buildGeminiInstruction({ language, removeFillers, dictionary });
-  const genAI = new GoogleGenerativeAI(apiKey);
+  const customInstructions = store.get('customInstructions', '');
+  const outputLanguage = store.get('outputLanguage', 'same');
+  const { systemInstruction, extraParts } = options?.mode === OUTPUT_MODE.COMMAND
+    ? buildCommandRequest({ selectedText: options.selectedText, language, dictionary, customInstructions })
+    : {
+      systemInstruction: buildGeminiInstruction({
+        language,
+        removeFillers,
+        dictionary,
+        customInstructions,
+        outputLanguage,
+        snippets,
+      }),
+      extraParts: [],
+    };
+  const ai = new GoogleGenAI({ apiKey });
 
   let lastError = null;
 
-  for (const modelName of GEMINI_MODELS) {
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      systemInstruction,
-      generationConfig: {
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
-
+  for (const modelName of getGeminiModelOrder(store.get('model', DEFAULT_GEMINI_MODEL))) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const result = await withTimeout(
-          model.generateContent([{ inlineData: { data: audioBase64, mimeType } }]),
-          45000
+        const result = await withTimeout((abortSignal) => ai.models.generateContent({
+          model: modelName,
+          contents: [{ inlineData: { data: audioBase64, mimeType } }, ...extraParts],
+          config: {
+            systemInstruction,
+            thinkingConfig: getThinkingConfig(modelName),
+            abortSignal,
+          },
+        }), 45000
         );
-        const text = result.response.text().trim();
+        const text = result.text?.trim();
         if (!text) {
           throw new Error('Gemini APIから空の結果が返りました。');
         }
@@ -295,23 +678,28 @@ async function processAudioWithGemini(audioBase64, mimeType, options = {}) {
         await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
       }
     }
+    if (!shouldFallbackGeminiError(lastError)) break;
   }
 
   const classified = classifyGeminiError(lastError);
   throw Object.assign(new Error(classified.error), { errorCode: classified.errorCode });
 }
 
-async function testGeminiApiKey(apiKey) {
-  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+async function testGeminiApiKey(apiKey, model) {
+  const key = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : getStoredApiKey();
   if (!key) {
-    throw Object.assign(new Error('Gemini APIキーを入力してください。'), {
+    throw Object.assign(new Error('Gemini APIキーが設定されていません。'), {
       errorCode: 'GEMINI_API_KEY_MISSING',
     });
   }
 
-  const genAI = new GoogleGenerativeAI(key);
-  const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-  await withTimeout(model.generateContent('Return only: ok'), 15000);
+  const ai = new GoogleGenAI({ apiKey: key });
+  const [modelName] = getGeminiModelOrder(model || store.get('model', DEFAULT_GEMINI_MODEL));
+  await withTimeout((abortSignal) => ai.models.generateContent({
+    model: modelName,
+    contents: 'Return only: ok',
+    config: { thinkingConfig: getThinkingConfig(modelName), abortSignal },
+  }), 15000);
 }
 
 function addToHistory(entry) {
@@ -321,7 +709,7 @@ function addToHistory(entry) {
 
   const history = Array.isArray(store.get('history')) ? store.get('history') : [];
   history.unshift({
-    id: Date.now(),
+    id: generateHistoryId(),
     timestamp: new Date().toISOString(),
     processed,
     ...(raw && raw !== processed ? { raw } : {}),
@@ -337,6 +725,10 @@ function ensureFailedRecordingsDir() {
 }
 
 function failedRecordingPaths(id) {
+  // renderer から渡る id をパスに使うため、saveFailedRecording が生成する形式以外は拒否する
+  if (typeof id !== 'string' || !/^\d+-[a-z0-9]+$/.test(id)) {
+    throw new Error('録音データのIDが不正です。');
+  }
   return {
     audioPath: path.join(FAILED_RECORDINGS_DIR, `${id}.audio`),
     metaPath: path.join(FAILED_RECORDINGS_DIR, `${id}.json`),
@@ -415,10 +807,14 @@ ipcMain.handle('save-settings', (event, settings) => {
   try {
     const normalized = normalizeSettings(settings);
     const oldHotkey = store.get('hotkey');
+    const oldCommandHotkey = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY);
 
     Object.entries(normalized).forEach(([key, value]) => {
+      if (key === 'apiKey') return;
       store.set(key, value);
     });
+
+    if (normalized.apiKey) saveApiKey(normalized.apiKey);
 
     if (normalized.hotkey && normalized.hotkey !== oldHotkey) {
       const success = registerHotkey(normalized.hotkey);
@@ -434,10 +830,30 @@ ipcMain.handle('save-settings', (event, settings) => {
       refreshTray();
     }
 
+    if (normalized.commandHotkey !== undefined && normalized.commandHotkey !== oldCommandHotkey) {
+      const conflict = normalized.commandHotkey && normalized.commandHotkey === store.get('hotkey');
+      if (conflict || !registerCommandHotkey(normalized.commandHotkey)) {
+        store.set('commandHotkey', oldCommandHotkey);
+        registerCommandHotkey(oldCommandHotkey);
+        return {
+          success: false,
+          errorCode: 'HOTKEY_REGISTER_FAILED',
+          error: conflict
+            ? 'コマンドモードのホットキーは録音ホットキーと別のキーにしてください。'
+            : `「${normalized.commandHotkey}」の登録に失敗しました。他のアプリと競合している可能性があります。`,
+        };
+      }
+    }
+
     return { success: true };
   } catch (error) {
     return { success: false, errorCode: 'SETTINGS_SAVE_FAILED', error: error.message };
   }
+});
+
+ipcMain.handle('delete-api-key', () => {
+  deleteApiKey();
+  return { success: true };
 });
 
 ipcMain.handle('get-history', () => {
@@ -450,22 +866,61 @@ ipcMain.handle('clear-history', () => {
   return { success: true };
 });
 
-ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
+ipcMain.handle('delete-history-entry', (event, id) => {
   try {
-    const result = await processAudioWithGemini(payload.audioBase64, payload.mimeType, payload.options);
+    const history = Array.isArray(store.get('history')) ? store.get('history') : [];
+    const updated = history.filter((item) => String(item.id) !== String(id));
+    store.set('history', updated);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('update-history-entry', (event, payload = {}) => {
+  try {
+    const { id, text } = payload;
+    const updatedText = typeof text === 'string' ? text.trim() : '';
+    if (!updatedText) {
+      return { success: false, error: '内容を空にして保存することはできません。' };
+    }
+    const history = Array.isArray(store.get('history')) ? store.get('history') : [];
+    const updated = history.map((item) => {
+      if (String(item.id) === String(id)) {
+        return {
+          ...item,
+          processed: updatedText,
+        };
+      }
+      return item;
+    });
+    store.set('history', updated);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('process-audio-with-gemini', async (event, payload = {}) => {
+  let options = payload.options;
+  try {
+    options = await resolveGeminiOptions(payload.options);
+    const result = await processAudioWithGemini(payload.audioBase64, payload.mimeType, options);
     return { success: true, text: result };
   } catch (error) {
     return {
       success: false,
       error: error.message,
       errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+      // 再送信時に同じ条件 (Command Mode の選択テキスト等) で送れるよう、実際に使ったオプションを返す
+      options,
     };
   }
 });
 
 ipcMain.handle('test-gemini-api-key', async (event, payload = {}) => {
   try {
-    await testGeminiApiKey(payload.apiKey);
+    await testGeminiApiKey(payload.apiKey, payload.model);
     return { success: true };
   } catch (error) {
     const classified = classifyGeminiError(error);
@@ -477,40 +932,61 @@ ipcMain.handle('test-gemini-api-key', async (event, payload = {}) => {
   }
 });
 
-ipcMain.handle('insert-text', async (event, payload = {}) => {
-  try {
-    const text = typeof payload.text === 'string' ? payload.text : '';
-    const raw = typeof payload.raw === 'string' ? payload.raw : '';
-    stopRecordingState({ hideOverlay: true });
-    addToHistory({ raw, processed: text });
-
-    const saveResult = saveGeneratedText(text);
-    return { success: true, ...saveResult };
-  } catch (error) {
-    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
-  }
-});
-
 ipcMain.handle('save-generated-text', async (event, payload = {}) => {
+  // idle に戻すと outputSession が破棄されるので先に取り出す。再送信時は null (クリップボード保存)。
+  const session = outputSession;
+  const mode = session?.mode || OUTPUT_MODE.DICTATION;
   try {
     const text = typeof payload.text === 'string' ? payload.text : '';
     const raw = typeof payload.raw === 'string' ? payload.raw : '';
-    stopRecordingState({ hideOverlay: true });
+    stopRecordingState();
     addToHistory({ raw, processed: text });
 
-    const saveResult = saveGeneratedText(text);
-    return { success: true, ...saveResult };
+    const saveResult = await saveGeneratedText(text, session);
+    return { success: true, mode, ...saveResult };
   } catch (error) {
-    return { success: false, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
+    return { success: false, mode, errorCode: 'SAVE_TEXT_FAILED', error: error.message };
   }
 });
 
-ipcMain.handle('get-active-app', async () => 'Unknown');
+ipcMain.handle('get-accessibility-status', () => getAccessibilityStatus());
 
+// 署名が変わる前の許可記録が残っていると、ON にしても効かない。記録を消して登録し直す。
+ipcMain.handle('reset-accessibility-permission', async () => {
+  if (process.platform !== 'darwin') return { success: false };
+  await runCommand('tccutil', ['reset', 'Accessibility', app.isPackaged ? 'com.water-voice.app' : 'com.github.Electron']);
+  await runCommand('tccutil', ['reset', 'AppleEvents', app.isPackaged ? 'com.water-voice.app' : 'com.github.Electron']);
+  systemPreferences.isTrustedAccessibilityClient(true);
+  const { ok } = await runCommand('open', [ACCESSIBILITY_SETTINGS_URL]);
+  return { success: ok };
+});
+
+ipcMain.handle('open-accessibility-settings', async () => {
+  if (process.platform !== 'darwin') return { success: false };
+  // prompt 付きで問い合わせると、システム設定の一覧に Water Voice が追加される
+  systemPreferences.isTrustedAccessibilityClient(true);
+  const { ok } = await runCommand('open', [ACCESSIBILITY_SETTINGS_URL]);
+  return { success: ok };
+});
+
+// ユーザー起点のキャンセル (オーバーレイクリック等)。録音中のみ有効。
 ipcMain.handle('cancel-recording', () => {
-  cancelRecordingState({ hideOverlay: true });
+  dispatchRecordingEvent(RECORDING_EVENT.CANCEL);
   return { success: true };
 });
+
+// ホーム画面の録音ボタン。ホットキーと同じ経路で状態遷移させる。
+ipcMain.handle('toggle-recording', () => {
+  return { success: true, phase: toggleRecording() };
+});
+
+// renderer 側の処理終了通知 (成功・失敗・録音が短すぎ・開始失敗)。オーバーレイを閉じて idle に戻す。
+ipcMain.handle('finish-recording-session', () => {
+  dispatchRecordingEvent(RECORDING_EVENT.FINISH);
+  return { success: true };
+});
+
+ipcMain.handle('get-recording-phase', () => recordingPhase);
 
 ipcMain.handle('save-failed-recording', (event, payload = {}) => {
   try {
@@ -567,13 +1043,256 @@ ipcMain.handle('check-mic-permission', async () => {
   return systemPreferences.getMediaAccessStatus('microphone');
 });
 
+let activeFileTranscriptionController = null;
+const FILE_SIZE_INLINE_LIMIT = 20 * 1024 * 1024; // 20MB
+
+async function processFileWithGemini(filePath, options = {}, externalSignal = null) {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) {
+    throw new Error('指定されたファイルが存在しないか、不正なパスです。');
+  }
+
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const mimeType = getMimeTypeFromExtension(filePath);
+
+  const apiKey = getStoredApiKey();
+  if (!apiKey) {
+    throw Object.assign(new Error('Gemini APIキーが設定されていません。設定画面で入力してください。'), {
+      errorCode: 'GEMINI_API_KEY_MISSING',
+    });
+  }
+
+  const dictionary = normalizeDictionary(store.get('customDictionary'));
+  const snippets = normalizeSnippets(store.get('snippets'));
+  const removeFillers = options?.removeFillers ?? store.get('removeFillers', true);
+  const language = options?.language ?? store.get('language', 'ja-JP');
+  const customInstructions = store.get('customInstructions', '');
+  const outputLanguage = store.get('outputLanguage', 'same');
+  const mode = options?.mode || 'full';
+
+  const systemInstruction = buildFileTranscribeInstruction({
+    mode,
+    language,
+    removeFillers,
+    dictionary,
+    customInstructions,
+    outputLanguage,
+    snippets,
+  });
+
+  const ai = new GoogleGenAI({ apiKey });
+  let uploadResult = null;
+  let contents = null;
+
+  try {
+    if (fileSize < FILE_SIZE_INLINE_LIMIT) {
+      const fileBuffer = fs.readFileSync(filePath);
+      const audioBase64 = fileBuffer.toString('base64');
+      contents = [{ inlineData: { data: audioBase64, mimeType } }];
+    } else {
+      uploadResult = await ai.files.upload({
+        file: filePath,
+        mimeType,
+        config: { mimeType },
+      });
+      // 動画など大きいファイルはサーバー側の処理完了(ACTIVE)まで待ってから参照する
+      const uploadDeadline = Date.now() + 180000;
+      while (uploadResult.state === 'PROCESSING') {
+        if (externalSignal?.aborted) throw new Error('文字起こし処理がキャンセルされました。');
+        if (Date.now() > uploadDeadline) throw new Error('アップロードしたファイルの処理がタイムアウトしました。');
+        await delay(2000);
+        uploadResult = await ai.files.get({ name: uploadResult.name });
+      }
+      if (uploadResult.state === 'FAILED') {
+        throw new Error('アップロードしたファイルをGeminiが処理できませんでした。');
+      }
+      const fileUri = uploadResult.uri;
+      contents = [{ fileData: { fileUri, mimeType: uploadResult.mimeType || mimeType } }];
+    }
+
+    let lastError = null;
+
+    for (const modelName of getGeminiModelOrder(store.get('model', DEFAULT_GEMINI_MODEL))) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (externalSignal?.aborted) {
+          throw new Error('文字起こし処理がキャンセルされました。');
+        }
+        try {
+          const result = await withTimeout(async (abortSignal) => {
+            const onAbort = () => abortSignal.abort();
+            if (externalSignal) {
+              externalSignal.addEventListener('abort', onAbort, { once: true });
+            }
+            try {
+              return await ai.models.generateContent({
+                model: modelName,
+                contents,
+                config: {
+                  systemInstruction,
+                  thinkingConfig: getThinkingConfig(modelName),
+                  abortSignal,
+                },
+              });
+            } finally {
+              if (externalSignal) {
+                externalSignal.removeEventListener('abort', onAbort);
+              }
+            }
+          }, 180000);
+
+          const text = result.text?.trim();
+          if (!text) {
+            throw new Error('Gemini APIから空の結果が返りました。');
+          }
+
+          addToHistory({
+            raw: text,
+            processed: text,
+            source: 'file',
+            fileName: path.basename(filePath),
+          });
+
+          return text;
+        } catch (error) {
+          lastError = error;
+          if (externalSignal?.aborted || error.name === 'AbortError' || error.message?.includes('キャンセル')) {
+            throw new Error('文字起こし処理がキャンセルされました。');
+          }
+          const status = getErrorStatus(error);
+          if (!RETRYABLE_STATUS_CODES.has(status) || attempt === 1) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+        }
+      }
+      if (!shouldFallbackGeminiError(lastError)) break;
+    }
+
+    const classified = classifyGeminiError(lastError);
+    throw Object.assign(new Error(classified.error), { errorCode: classified.errorCode });
+  } finally {
+    if (uploadResult && uploadResult.name) {
+      try {
+        await ai.files.delete({ name: uploadResult.name });
+      } catch {
+        // cleanup ignore
+      }
+    }
+  }
+}
+
+ipcMain.handle('select-audio-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      {
+        name: '音声・動画ファイル',
+        extensions: ['mp3', 'm4a', 'wav', 'webm', 'ogg', 'aac', 'flac', 'mp4', 'mov', 'mkv', 'avi'],
+      },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+    return { canceled: true, filePath: null, fileName: null, fileSize: 0 };
+  }
+
+  const filePath = result.filePaths[0];
+  const stat = fs.statSync(filePath);
+  return {
+    canceled: false,
+    filePath,
+    fileName: path.basename(filePath),
+    fileSize: stat.size,
+  };
+});
+
+ipcMain.handle('transcribe-file', async (event, payload = {}) => {
+  try {
+    if (activeFileTranscriptionController) {
+      activeFileTranscriptionController.abort();
+    }
+    activeFileTranscriptionController = new AbortController();
+    const text = await processFileWithGemini(
+      payload.filePath,
+      payload.options,
+      activeFileTranscriptionController.signal
+    );
+    activeFileTranscriptionController = null;
+    return { success: true, text };
+  } catch (error) {
+    activeFileTranscriptionController = null;
+    return {
+      success: false,
+      error: error.message,
+      errorCode: error.errorCode || classifyGeminiError(error).errorCode,
+    };
+  }
+});
+
+ipcMain.handle('cancel-file-transcription', () => {
+  if (activeFileTranscriptionController) {
+    activeFileTranscriptionController.abort();
+    activeFileTranscriptionController = null;
+  }
+  return { success: true };
+});
+
+ipcMain.handle('save-text-file', async (event, payload = {}) => {
+  try {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const defaultFileName = typeof payload.defaultFileName === 'string' && payload.defaultFileName
+      ? payload.defaultFileName
+      : 'transcription.txt';
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'テキストファイルとして保存',
+      defaultPath: defaultFileName,
+      filters: [{ name: 'テキストファイル', extensions: ['txt'] }],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    fs.writeFileSync(result.filePath, text, 'utf8');
+    return { success: true, filePath: result.filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// 前回起動時からバージョンが変わっていれば更新完了を通知し、起動時に 1 回だけ新しい版を確認する。
+function startAutoUpdate() {
+  const currentVersion = app.getVersion();
+  const lastRunVersion = store.get('lastRunVersion', '');
+  if (lastRunVersion && lastRunVersion !== currentVersion && Notification.isSupported()) {
+    new Notification({ title: 'Water Voice を更新しました', body: `v${lastRunVersion} → v${currentVersion}` }).show();
+  }
+  store.set('lastRunVersion', currentVersion);
+
+  if (!store.get('autoUpdate', true)) return;
+  checkForUpdatesOnStartup({
+    isIdle: () => recordingPhase === RECORDING_PHASE.IDLE,
+    beforeQuit: () => {
+      isQuitting = true;
+    },
+  });
+}
+
 app.whenReady().then(async () => {
+  migrateLegacyApiKey();
   await checkMicrophonePermission();
   cleanupOldFailedRecordings();
   createMainWindow();
   createOverlayWindow();
   createTray();
   registerHotkey(store.get('hotkey'));
+  registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY));
+  startAutoUpdate();
+  // 自動貼り付けが有効なのに許可がなければ、macOS 標準の許可ダイアログを出して一覧に登録させる
+  if (process.platform === 'darwin' && store.get('autoPaste', true) && !isAccessibilityTrusted()) {
+    systemPreferences.isTrustedAccessibilityClient(true);
+  }
 
   app.on('activate', () => {
     mainWindow?.show();

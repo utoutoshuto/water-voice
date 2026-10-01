@@ -1,14 +1,26 @@
 const MAX_HISTORY = 100;
 const MAX_DICTIONARY_WORDS = 800;
+const MAX_SNIPPETS = 100;
+const MAX_CUSTOM_INSTRUCTIONS_LENGTH = 2000;
 const MAX_AUDIO_BASE64_LENGTH = 40 * 1024 * 1024;
-const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-2.5-flash'];
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-2.5-flash'];
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 503, 504]);
 const ALLOWED_SETTINGS_KEYS = new Set([
   'apiKey',
   'hotkey',
   'language',
+  'model',
   'removeFillers',
   'customDictionary',
+  'microphoneDeviceId',
+  'customInstructions',
+  'outputLanguage',
+  'snippets',
+  'autoPaste',
+  'restoreClipboard',
+  'autoUpdate',
+  'commandHotkey',
 ]);
 
 function normalizeDictionary(value) {
@@ -29,27 +41,80 @@ function normalizeDictionary(value) {
   return words;
 }
 
+function normalizeSnippets(value) {
+  if (!Array.isArray(value)) return [];
+
+  const snippets = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const trigger = typeof item.trigger === 'string' ? item.trigger.trim() : '';
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (!trigger || !text) continue;
+    snippets.push({ trigger, text });
+    if (snippets.length >= MAX_SNIPPETS) break;
+  }
+  return snippets;
+}
+
+function normalizeOutputLanguage(value) {
+  const language = typeof value === 'string' ? value.trim() : '';
+  if (language === 'same') return language;
+  return /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/.test(language) ? language : 'same';
+}
+
+function getApiKeyLast4(value) {
+  const apiKey = typeof value === 'string' ? value.trim() : '';
+  return apiKey ? apiKey.slice(-4) : '';
+}
+
+// Gemini 3 系は thinkingBudget: 0 を 400 で拒否するモデルがある(3.5-flash-lite 等)ため thinkingLevel を使う。
+// 2.5 系は thinkingLevel 非対応なので従来どおり thinkingBudget: 0 で無効化する。
+function getThinkingConfig(model) {
+  return String(model).startsWith('gemini-2.')
+    ? { thinkingBudget: 0 }
+    : { thinkingLevel: 'MINIMAL' };
+}
+
+function getGeminiModelOrder(model) {
+  const selected = GEMINI_MODELS.includes(model) ? model : DEFAULT_GEMINI_MODEL;
+  return [selected, ...GEMINI_MODELS.filter((item) => item !== selected)];
+}
+
 function normalizeSettings(settings = {}) {
   const normalized = {};
 
   for (const [key, value] of Object.entries(settings)) {
     if (!ALLOWED_SETTINGS_KEYS.has(key)) continue;
 
-    if (key === 'apiKey' || key === 'hotkey' || key === 'language') {
+    if (key === 'apiKey' || key === 'hotkey' || key === 'language' || key === 'microphoneDeviceId' || key === 'commandHotkey') {
       normalized[key] = typeof value === 'string' ? value.trim() : '';
-    } else if (key === 'removeFillers') {
+    } else if (key === 'model') {
+      normalized[key] = GEMINI_MODELS.includes(value) ? value : DEFAULT_GEMINI_MODEL;
+    } else if (key === 'removeFillers' || key === 'autoPaste' || key === 'restoreClipboard' || key === 'autoUpdate') {
       normalized[key] = Boolean(value);
     } else if (key === 'customDictionary') {
       normalized[key] = normalizeDictionary(value);
+    } else if (key === 'customInstructions') {
+      normalized[key] = typeof value === 'string' ? value.trim().slice(0, MAX_CUSTOM_INSTRUCTIONS_LENGTH) : '';
+    } else if (key === 'outputLanguage') {
+      normalized[key] = normalizeOutputLanguage(value);
+    } else if (key === 'snippets') {
+      normalized[key] = normalizeSnippets(value);
     }
   }
 
   return normalized;
 }
 
-function buildGeminiInstruction({ language, removeFillers, dictionary }) {
+function buildGeminiInstruction({ language, removeFillers, dictionary = [], customInstructions = '', outputLanguage = 'same', snippets = [] }) {
+  const inputLanguageInstruction = language === 'auto'
+    ? '音声の言語は自動判別してください。多言語が混在している場合も、そのまま正確に扱ってください。'
+    : `音声の言語は「${language}」です。その言語として自然な文章に整形してください。`;
+  const outputLanguageInstruction = outputLanguage === 'same'
+    ? '話された言語のまま出力する'
+    : `出力は「${outputLanguage}」に翻訳する`;
   let instruction = `あなたは音声文字起こし・テキスト整形アシスタントです。
-音声の言語は「${language}」です。その言語として自然な文章に整形してください。
+${inputLanguageInstruction}
 ユーザーから音声データが届いたら、以下のルールに従って処理したテキストのみを返してください。
 
 ルール:
@@ -57,10 +122,19 @@ function buildGeminiInstruction({ language, removeFillers, dictionary }) {
 2. ${removeFillers ? 'えー、あー、えっと、うーん などのフィラーワードを除去する' : 'フィラーワードはそのまま保持する'}
 3. 句読点を適切に追加する。話し言葉らしい自然なトーンを保つ
 4. 段落区切りが自然な位置にあれば改行を入れる
-5. 整形したテキストのみを返す。説明文、前置き、補足は不要`;
+5. ${outputLanguageInstruction}
+6. 整形したテキストのみを返す。説明文、前置き、補足は不要`;
 
   if (dictionary.length > 0) {
     instruction += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
+  }
+
+  if (snippets.length > 0) {
+    instruction += `\n\nスニペット: 音声中でトリガー語が話された場合、対応する本文に展開してください。\n${snippets.map(({ trigger, text }) => `- ${trigger}: ${text}`).join('\n')}`;
+  }
+
+  if (customInstructions) {
+    instruction += `\n\n追加指示:\n${customInstructions}`;
   }
 
   return instruction;
@@ -71,7 +145,7 @@ function getErrorStatus(error) {
   if (typeof status === 'number') return status;
 
   const message = String(error?.message || '');
-  const match = message.match(/\b(429|500|503|504)\b/);
+  const match = message.match(/\b(400|401|403|404|429|500|503|504)\b/);
   return match ? Number(match[1]) : null;
 }
 
@@ -79,10 +153,22 @@ function classifyGeminiError(error) {
   const status = getErrorStatus(error);
   const message = String(error?.message || '');
 
-  if (status === 400 || message.includes('API key not valid')) {
+  if (status === 401 || status === 403 || /API_KEY_INVALID|API key not valid/i.test(message)) {
     return {
       errorCode: 'GEMINI_AUTH',
       error: 'Gemini APIキーを確認してください。',
+    };
+  }
+  if (status === 404) {
+    return {
+      errorCode: 'GEMINI_MODEL_NOT_FOUND',
+      error: '選択したGeminiモデルが見つかりません。別のモデルをお試しください。',
+    };
+  }
+  if (status === 400) {
+    return {
+      errorCode: 'GEMINI_INVALID_REQUEST',
+      error: 'Gemini APIへのリクエストが不正です。音声形式と設定を確認してください。',
     };
   }
   if (status === 429) {
@@ -110,6 +196,11 @@ function classifyGeminiError(error) {
   };
 }
 
+function shouldFallbackGeminiError(error) {
+  const { errorCode } = classifyGeminiError(error);
+  return errorCode !== 'GEMINI_AUTH' && errorCode !== 'GEMINI_INVALID_REQUEST';
+}
+
 function validateAudioPayload(audioBase64, mimeType) {
   if (typeof audioBase64 !== 'string' || audioBase64.length === 0) {
     throw Object.assign(new Error('音声データが空です。'), { errorCode: 'INVALID_AUDIO' });
@@ -124,17 +215,118 @@ function validateAudioPayload(audioBase64, mimeType) {
   }
 }
 
+function getMimeTypeFromExtension(filePath) {
+  if (typeof filePath !== 'string') return 'audio/mp3';
+  const lastDot = filePath.lastIndexOf('.');
+  if (lastDot === -1) return 'audio/mp3';
+  const ext = filePath.slice(lastDot).toLowerCase();
+  const mimeTypes = {
+    '.mp3': 'audio/mp3',
+    '.m4a': 'audio/m4a',
+    '.wav': 'audio/wav',
+    '.webm': 'audio/webm',
+    '.ogg': 'audio/ogg',
+    '.aac': 'audio/aac',
+    '.flac': 'audio/flac',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo',
+  };
+  return mimeTypes[ext] || 'audio/mp3';
+}
+
+function buildFileTranscribeInstruction({
+  mode = 'full',
+  language = 'ja-JP',
+  removeFillers = true,
+  dictionary = [],
+  customInstructions = '',
+  outputLanguage = 'same',
+  snippets = [],
+} = {}) {
+  const inputLanguageInstruction = language === 'auto'
+    ? '音声の言語は自動判別してください。多言語が混在している場合も、そのまま正確に扱ってください。'
+    : `音声の言語は「${language}」です。その言語として自然な文章に整形してください。`;
+
+  const outputLanguageInstruction = outputLanguage === 'same'
+    ? '話された言語のまま出力する'
+    : `出力は「${outputLanguage}」に翻訳する`;
+
+  let modeInstruction = '';
+  if (mode === 'summary') {
+    modeInstruction = `処理モード: 【要約（箇条書き）】
+ルール:
+1. 音声の内容を正確に理解し、主要なポイント・要点を箇条書きで分かりやすく整理して要約してください。
+2. ${removeFillers ? 'えー、あー、えっと などのフィラーワードや冗長な表現は除去してください。' : '話された発言のニュアンスを残して整理してください。'}
+3. ${outputLanguageInstruction}
+4. 簡潔かつ明確な箇条書き形式で出力してください。説明文、前置き、補足は不要です。`;
+  } else if (mode === 'minutes') {
+    modeInstruction = `処理モード: 【議事録】
+ルール:
+1. 音声の内容（会議や会話）から、重要事項を整理した議事録を作成してください。
+2. 以下のフォーマットに従って出力してください:
+   ■ 概要・目的
+   ■ 主な議論内容
+   ■ 決定事項
+   ■ TODO・次のアクション
+3. ${removeFillers ? 'フィラーワードは除去してください。' : '発言内容のニュアンスを正確に保持してください。'}
+4. ${outputLanguageInstruction}
+5. 議事録の文章のみを出力してください。説明文、前置き、補足は不要です。`;
+  } else {
+    modeInstruction = `処理モード: 【整形した全文】
+ルール:
+1. 音声の内容を正確に文字起こしし、意味を変えずに自然な文章に整形してください。
+2. ${removeFillers ? 'えー、あー、えっと、うーん などのフィラーワードを除去する' : 'フィラーワードはそのまま保持する'}
+3. 句読点を適切に追加する。話し言葉らしい自然なトーンを保つ
+4. 段落区切りが自然な位置にあれば改行を入れる
+5. ${outputLanguageInstruction}
+6. 整形したテキストのみを返す。説明文、前置き、補足は不要`;
+  }
+
+  let instruction = `あなたは音声・動画ファイルの文字起こしおよびテキスト整形アシスタントです。
+${inputLanguageInstruction}
+
+${modeInstruction}`;
+
+  if (Array.isArray(dictionary) && dictionary.length > 0) {
+    instruction += `\n\nカスタム辞書（これらの単語を正確に使用すること）:\n${dictionary.join(', ')}`;
+  }
+
+  if (Array.isArray(snippets) && snippets.length > 0) {
+    instruction += `\n\nスニペット: 音声中でトリガー語が話された場合、対応する本文に展開してください。\n${snippets.map(({ trigger, text }) => `- ${trigger}: ${text}`).join('\n')}`;
+  }
+
+  if (customInstructions) {
+    instruction += `\n\n追加指示:\n${customInstructions}`;
+  }
+
+  return instruction;
+}
+
 module.exports = {
   MAX_HISTORY,
   MAX_DICTIONARY_WORDS,
+  MAX_SNIPPETS,
+  MAX_CUSTOM_INSTRUCTIONS_LENGTH,
   MAX_AUDIO_BASE64_LENGTH,
+  DEFAULT_GEMINI_MODEL,
   GEMINI_MODELS,
   RETRYABLE_STATUS_CODES,
   ALLOWED_SETTINGS_KEYS,
   normalizeDictionary,
+  normalizeSnippets,
+  normalizeOutputLanguage,
+  getApiKeyLast4,
   normalizeSettings,
+  getGeminiModelOrder,
+  getThinkingConfig,
   buildGeminiInstruction,
   getErrorStatus,
   classifyGeminiError,
+  shouldFallbackGeminiError,
   validateAudioPayload,
+  getMimeTypeFromExtension,
+  buildFileTranscribeInstruction,
 };
+
